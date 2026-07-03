@@ -1,0 +1,9 @@
+{
+  "name": "agentparty",
+  "private": true,
+  "workspaces": [
+    "worker",
+    "cli",
+    "shared"
+  ]
+}
