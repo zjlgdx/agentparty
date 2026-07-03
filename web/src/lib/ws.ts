@@ -3,14 +3,16 @@
 import type { ClientFrame, ServerFrame } from "@agentparty/shared";
 
 export type SocketStatus = "connecting" | "open" | "reconnecting" | "closed";
-export type FatalReason = "revoked" | "archived";
+export type FatalReason = "revoked" | "archived" | "forbidden";
 
 const PING_INTERVAL_MS = 25_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 
-// do 用 close(1008, reason) 表达终局，这两种不重连
-const FATAL_REASONS: readonly string[] = ["revoked", "archived"];
+// do 用 close(1008, reason) 表达终局，这几种不重连。
+// forbidden = 私有频道 ACL 拒入（spec §3）：worker accept-then-close(1008,"forbidden")，
+// 与 archived 同套路，客户端据此停止重连并提示，不陷入无限重连。
+const FATAL_REASONS: readonly string[] = ["revoked", "archived", "forbidden"];
 
 // 握手阶段被 worker 拒掉（401 吊销等）浏览器只给 1006，连续 N 次握手失败后
 // 用 rest 探测 token 是否还活着，避免拿死 token 无限重连

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Composer } from "../components/Composer";
 import { MessageCard } from "../components/MessageCard";
 import { PresenceBar } from "../components/PresenceBar";
-import { AuthError, fetchMessages } from "../lib/api";
+import { AuthError, ForbiddenError, fetchMessages } from "../lib/api";
 import { ChannelSocket } from "../lib/ws";
 import { channelReducer, initialChannelState } from "../state";
 
@@ -12,13 +12,14 @@ interface Props {
   slug: string;
   token: string;
   mode: "normal" | "party";
+  isPublic: boolean; // 顶栏 PUBLIC 徽章（spec §4）
   shareMode: boolean;
   onAuthFailed(message: string): void;
 }
 
 const MENTION_RE = /@([a-zA-Z0-9][a-zA-Z0-9._-]*)/g;
 
-export function ChannelPage({ slug, token, mode, shareMode, onAuthFailed }: Props) {
+export function ChannelPage({ slug, token, mode, isPublic, shareMode, onAuthFailed }: Props) {
   const [state, dispatch] = useReducer(channelReducer, initialChannelState);
   const [draft, setDraft] = useState("");
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export function ChannelPage({ slug, token, mode, shareMode, onAuthFailed }: Prop
       .catch((err: unknown) => {
         if (!alive) return;
         if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) dispatch({ type: "fatal", reason: "forbidden" });
         else setHistoryError("history failed to load");
       });
     return () => {
@@ -105,6 +107,17 @@ export function ChannelPage({ slug, token, mode, shareMode, onAuthFailed }: Prop
 
   const canWrite = state.self !== null && !state.archived && !state.readonly;
 
+  // 私有频道拒入（spec §3）：ws 已停止重连，给一条友好红条，不留空白 / 不无限转圈
+  if (state.forbidden) {
+    return (
+      <div className="chan chan--forbidden">
+        <p className="banner banner--red" role="alert">
+          这是私有频道，你没有访问权限
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="chan">
       <PresenceBar
@@ -112,6 +125,7 @@ export function ChannelPage({ slug, token, mode, shareMode, onAuthFailed }: Prop
         participants={state.participants}
         status={state.status}
         party={mode === "party" || state.mode === "party"}
+        isPublic={isPublic}
       />
       <div className="stream" ref={streamRef} onScroll={onScroll}>
         {state.messages.map((m) => (

@@ -196,6 +196,24 @@
   margin-left: 8px;
   vertical-align: 3px;
 }
+/* public 频道徽章：与 PARTY 同款蜡笔手绘，改蜡笔绿底表「开放」，歪斜方向相反以便并排区分 */
+.public-badge {
+  font-family: var(--d-marker);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: #fff;
+  background: var(--d-green);
+  padding: 0 7px 1px;
+  transform: rotate(2deg);
+  flex: none;
+  align-self: center;
+}
+.home-card-title .public-badge {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: 3px;
+}
 /* 已连接但还没报过 status：蜡笔黄 */
 .d-dot--online { background: var(--d-yellow); }
 

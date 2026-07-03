@@ -8,6 +8,9 @@ const SHARE_TOKEN_KEY = "ap_share_token";
 let activeShareToken: string | null = null;
 
 export class AuthError extends Error {}
+// 私有频道 ACL 拒入（spec §3 访问规则矩阵）：worker 回 403 forbidden / WS 1008 forbidden。
+// 与 AuthError 区分——token 有效，只是这个频道不让进，不该回登录闸。
+export class ForbiddenError extends Error {}
 
 export function urlToken(): string | null {
   return new URLSearchParams(window.location.search).get("t");
@@ -75,6 +78,8 @@ export interface ChannelInfo {
   topic: string | null;
   kind: "standing" | "temp";
   mode: "normal" | "party";
+  // 公开/私有（spec §3.1）：默认 private，旧 worker 响应缺此字段时按私有处理（不显 PUBLIC 徽章）。
+  visibility: "public" | "private";
   created_at: number;
   archived_at: number | null;
   last_message: ChannelLastMessage | null;
@@ -115,6 +120,7 @@ export async function fetchMessages(token: string, slug: string, limit = 1000): 
     headers: { authorization: `Bearer ${token}` },
   });
   if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
   if (!res.ok) throw new Error(`GET /api/channels/${slug}/messages failed (${res.status})`);
   const data = (await res.json()) as { messages: MsgFrame[] };
   return data.messages;

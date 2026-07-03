@@ -12,6 +12,7 @@ export interface ChannelState {
   status: SocketStatus;
   readonly: boolean; // welcome.role=readonly（或 send 被拒 unauthorized 兜底）→ 隐藏输入框
   archived: boolean; // 灰条 "channel archived"
+  forbidden: boolean; // 私有频道 ACL 拒入（spec §3）→ 友好红条，停止重连
   loopGuard: string | null; // 黄条，人类发言可重置
   sendError: string | null; // rate_limited / too_large 红条
   lastSentSeq: number; // sent 确认，composer 据此清空草稿
@@ -26,6 +27,7 @@ export const initialChannelState: ChannelState = {
   status: "connecting",
   readonly: false,
   archived: false,
+  forbidden: false,
   loopGuard: null,
   sendError: null,
   lastSentSeq: 0,
@@ -44,8 +46,10 @@ export function channelReducer(state: ChannelState, action: ChannelAction): Chan
     case "send_failed":
       return { ...state, sendError: action.message };
     case "fatal":
-      // revoked 由页面层接管（回登录闸），这里只处理 archived
-      return action.reason === "archived" ? { ...state, archived: true } : state;
+      // revoked 由页面层接管（回登录闸）；archived / forbidden 在此落地为对应条幅
+      if (action.reason === "archived") return { ...state, archived: true };
+      if (action.reason === "forbidden") return { ...state, forbidden: true };
+      return state;
     case "frame":
       return applyFrame(state, action.frame);
   }
@@ -99,6 +103,9 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
     case "sent":
       return { ...state, lastSentSeq: frame.seq, sendError: null, loopGuard: null };
     case "error":
+      // worker 可能先发 error:forbidden 再 1008 关连（private ACL 拒入，spec §3）。
+      // "forbidden" 尚未进 shared ErrorCode 联合类型，运行时按字符串识别。
+      if ((frame.code as string) === "forbidden") return { ...state, forbidden: true };
       switch (frame.code) {
         case "unauthorized":
           // 契约：send 被拒 unauthorized 即视为 readonly token（吊销场景随后会被 1008 踢线接管）

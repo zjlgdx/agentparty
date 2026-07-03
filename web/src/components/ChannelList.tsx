@@ -54,6 +54,7 @@ function ChannelPill({
       <span className="chan-head">
         <PresenceDots channel={c} />
         <span className="chan-name">{c.title ?? c.slug}</span>
+        {c.visibility === "public" && <span className="d-hl public-badge">PUBLIC</span>}
         {c.mode === "party" && <span className="d-hl party-badge">PARTY</span>}
         {c.kind === "temp" && <span className="chan-tag t-mono">temp</span>}
         {c.archived_at !== null && <span className="chan-tag t-mono">archived</span>}

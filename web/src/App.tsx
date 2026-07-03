@@ -276,6 +276,7 @@ export function App() {
               slug={slug}
               token={token}
               mode={channels?.find((c) => c.slug === slug)?.mode ?? "normal"}
+              isPublic={channels?.find((c) => c.slug === slug)?.visibility === "public"}
               shareMode={isShareMode()}
               onAuthFailed={onAuthFailed}
             />

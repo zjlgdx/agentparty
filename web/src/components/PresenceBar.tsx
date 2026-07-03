@@ -10,6 +10,7 @@ interface Props {
   participants: Sender[];
   status: SocketStatus;
   party?: boolean; // mode=party 的频道在最左挂蜡笔黄 PARTY 徽章
+  isPublic?: boolean; // public 频道在最左挂蜡笔绿 PUBLIC 徽章（spec §4）
 }
 
 interface Item {
@@ -20,7 +21,7 @@ interface Item {
   owner: string | null; // 所属人：agent 的操作者 / 人类的 email，仅连接中的参与者可知
 }
 
-export function PresenceBar({ presence, participants, status, party = false }: Props) {
+export function PresenceBar({ presence, participants, status, party = false, isPublic = false }: Props) {
   // 相对时间 30s 刷一次
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -46,6 +47,7 @@ export function PresenceBar({ presence, participants, status, party = false }: P
 
   return (
     <div className="presence-bar">
+      {isPublic && <span className="d-hl public-badge">PUBLIC</span>}
       {party && <span className="d-hl party-badge">PARTY</span>}
       {items.map((it) => (
         <span

@@ -29,6 +29,7 @@ export function Home({ channels, onOpen }: Props) {
               </header>
               <h3 className="home-card-title">
                 {c.title ?? c.slug}
+                {c.visibility === "public" && <span className="d-hl public-badge">PUBLIC</span>}
                 {c.mode === "party" && <span className="d-hl party-badge">PARTY</span>}
               </h3>
               {c.topic !== null && c.topic !== "" && <p className="home-card-topic">{c.topic}</p>}
