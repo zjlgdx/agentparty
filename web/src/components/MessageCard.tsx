@@ -1,0 +1,45 @@
+// 消息渲染：message → doodle 卡片外壳 + mono 元信息 + markdown 正文；
+// status → 时间线分隔条（spec §9 第 2 块）。
+import type { MsgFrame } from "@agentparty/shared";
+import { fmtTime } from "../lib/time";
+import { Markdown } from "./Markdown";
+
+interface Props {
+  msg: MsgFrame;
+  self: string | null;
+}
+
+export function MessageCard({ msg, self }: Props) {
+  if (msg.kind === "status") {
+    return (
+      <div className="msg-status" data-state={msg.state ?? undefined}>
+        <span>
+          {msg.sender.name} → {msg.state}
+          {msg.note ? ` · ${msg.note}` : ""} · {fmtTime(msg.ts)}
+        </span>
+      </div>
+    );
+  }
+
+  const mine = self !== null && msg.sender.name === self;
+  return (
+    <article className={"d-card msg-card" + (mine ? " msg-card--own" : "")}>
+      <header className="d-meta msg-head">
+        <span className="msg-sender">{msg.sender.name}</span>
+        <span className={"msg-kind" + (msg.sender.kind === "human" ? " msg-kind--human" : "")}>
+          {msg.sender.kind}
+        </span>
+        {msg.mentions.map((m) => (
+          <span key={m} className="msg-mention">
+            @{m}
+          </span>
+        ))}
+        {msg.reply_to !== null && <span className="msg-reply">↩ #{msg.reply_to}</span>}
+        <span className="msg-fill" />
+        <span>#{msg.seq}</span>
+        <time>{fmtTime(msg.ts)}</time>
+      </header>
+      <Markdown source={msg.body} />
+    </article>
+  );
+}

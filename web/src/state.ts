@@ -1,0 +1,108 @@
+// 频道页状态：协议帧 → React 状态的唯一归约点。
+// 消息按 seq 去重排序；status 帧同时进时间线和 presence 快照；error 帧内联展示不做 toast。
+import type { MsgFrame, PresenceEntry, Sender, ServerFrame } from "@agentparty/shared";
+import type { FatalReason, SocketStatus } from "./lib/ws";
+
+export interface ChannelState {
+  self: string | null;
+  participants: Sender[];
+  presence: Record<string, PresenceEntry>;
+  messages: MsgFrame[]; // 按 seq 升序、已去重
+  status: SocketStatus;
+  readonly: boolean; // welcome.role=readonly（或 send 被拒 unauthorized 兜底）→ 隐藏输入框
+  archived: boolean; // 灰条 "channel archived"
+  loopGuard: string | null; // 黄条，人类发言可重置
+  sendError: string | null; // rate_limited / too_large 红条
+  lastSentSeq: number; // sent 确认，composer 据此清空草稿
+}
+
+export const initialChannelState: ChannelState = {
+  self: null,
+  participants: [],
+  presence: {},
+  messages: [],
+  status: "connecting",
+  readonly: false,
+  archived: false,
+  loopGuard: null,
+  sendError: null,
+  lastSentSeq: 0,
+};
+
+export type ChannelAction =
+  | { type: "frame"; frame: ServerFrame }
+  | { type: "status"; status: SocketStatus }
+  | { type: "fatal"; reason: FatalReason };
+
+export function channelReducer(state: ChannelState, action: ChannelAction): ChannelState {
+  switch (action.type) {
+    case "status":
+      return { ...state, status: action.status };
+    case "fatal":
+      // revoked 由页面层接管（回登录闸），这里只处理 archived
+      return action.reason === "archived" ? { ...state, archived: true } : state;
+    case "frame":
+      return applyFrame(state, action.frame);
+  }
+}
+
+// 去重按 seq；帧绝大多数按序到达，从尾部回找插入点
+function insertMessage(messages: MsgFrame[], msg: MsgFrame): MsgFrame[] {
+  let i = messages.length;
+  while (i > 0) {
+    const prev = messages[i - 1]!;
+    if (prev.seq === msg.seq) return messages; // 重复（补拉 + 广播交叠）
+    if (prev.seq < msg.seq) break;
+    i--;
+  }
+  const next = messages.slice();
+  next.splice(i, 0, msg);
+  return next;
+}
+
+function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
+  switch (frame.type) {
+    case "welcome": {
+      const presence = { ...state.presence };
+      for (const p of frame.presence) presence[p.name] = p;
+      return {
+        ...state,
+        self: frame.self,
+        participants: frame.participants,
+        presence,
+        // welcome 首帧即知角色，readonly 分享链接不闪现输入框（spec §9）
+        readonly: frame.role === "readonly" ? true : state.readonly,
+      };
+    }
+    case "msg": {
+      const next: ChannelState = { ...state, messages: insertMessage(state.messages, frame) };
+      // 人类发言重置服务端 loop guard 计数，黄条同步撤下
+      if (frame.sender.kind === "human" && frame.kind === "message") next.loopGuard = null;
+      return next;
+    }
+    case "presence":
+      return {
+        ...state,
+        presence: {
+          ...state.presence,
+          [frame.name]: { name: frame.name, state: frame.state, note: frame.note, ts: frame.ts },
+        },
+      };
+    case "sent":
+      return { ...state, lastSentSeq: frame.seq, sendError: null, loopGuard: null };
+    case "error":
+      switch (frame.code) {
+        case "unauthorized":
+          // 契约：send 被拒 unauthorized 即视为 readonly token（吊销场景随后会被 1008 踢线接管）
+          return { ...state, readonly: true };
+        case "loop_guard":
+          return { ...state, loopGuard: frame.message };
+        case "archived":
+          return { ...state, archived: true };
+        default:
+          return { ...state, sendError: frame.message };
+      }
+    default:
+      return state; // pong 等
+  }
+}

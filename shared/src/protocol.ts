@@ -80,6 +80,8 @@ export interface WelcomeFrame {
   type: "welcome";
   channel: string;
   self: string;
+  /** 连接方 token 的角色；web 据此在首帧就隐藏 readonly 的输入框（spec §9），旧客户端忽略即可 */
+  role?: TokenRole;
   participants: Sender[];
   last_seq: number;
   presence: PresenceEntry[];

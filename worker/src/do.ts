@@ -138,6 +138,7 @@ export class ChannelDO extends Server<Env> {
       type: "welcome",
       channel: this.name,
       self: state.name,
+      role: state.role,
       participants: this.participants(),
       last_seq: this.lastSeq(),
       presence: this.presenceList(),

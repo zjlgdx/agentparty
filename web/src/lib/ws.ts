@@ -1,0 +1,104 @@
+// ws 客户端：hello/since 补拉 + 断线指数退避重连（1s 起、上限 30s）+ 25s 心跳。
+// 浏览器设不了 Authorization 头，token 走 ?t=（worker extractBearer 已支持）。
+import type { ClientFrame, ServerFrame } from "@agentparty/shared";
+
+export type SocketStatus = "connecting" | "open" | "reconnecting" | "closed";
+export type FatalReason = "revoked" | "archived";
+
+const PING_INTERVAL_MS = 25_000;
+const BACKOFF_MIN_MS = 1_000;
+const BACKOFF_MAX_MS = 30_000;
+
+// do 用 close(1008, reason) 表达终局，这两种不重连
+const FATAL_REASONS: readonly string[] = ["revoked", "archived"];
+
+export interface SocketHandlers {
+  onFrame(frame: ServerFrame): void;
+  onStatus(status: SocketStatus): void;
+  onFatal(reason: FatalReason): void;
+}
+
+export class ChannelSocket {
+  private ws: WebSocket | null = null;
+  private cursor = 0; // 本地已见最大 seq，重连 hello 用
+  private backoff = BACKOFF_MIN_MS;
+  private pingTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private everConnected = false;
+  private disposed = false;
+
+  constructor(
+    private readonly slug: string,
+    private readonly token: string,
+    private readonly handlers: SocketHandlers,
+  ) {}
+
+  connect() {
+    if (this.disposed) return;
+    this.handlers.onStatus(this.everConnected ? "reconnecting" : "connecting");
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(
+      `${proto}://${location.host}/api/channels/${this.slug}/ws?t=${encodeURIComponent(this.token)}`,
+    );
+    this.ws = ws;
+
+    ws.onopen = () => {
+      this.everConnected = true;
+      this.backoff = BACKOFF_MIN_MS;
+      this.handlers.onStatus("open");
+      this.send({ type: "hello", since: this.cursor });
+      // 字面量须与 do 的 setWebSocketAutoResponse 配对，不唤醒 do
+      this.pingTimer = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('{"type":"ping"}');
+      }, PING_INTERVAL_MS);
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data !== "string") return;
+      let frame: ServerFrame;
+      try {
+        frame = JSON.parse(ev.data) as ServerFrame;
+      } catch {
+        return;
+      }
+      if (frame.type === "msg" && frame.seq > this.cursor) this.cursor = frame.seq;
+      this.handlers.onFrame(frame);
+    };
+
+    ws.onclose = (ev) => {
+      this.clearPing();
+      this.ws = null;
+      if (this.disposed) return;
+      if (ev.code === 1008 && FATAL_REASONS.includes(ev.reason)) {
+        this.handlers.onStatus("closed");
+        this.handlers.onFatal(ev.reason as FatalReason);
+        return;
+      }
+      this.handlers.onStatus("reconnecting");
+      this.reconnectTimer = window.setTimeout(() => this.connect(), this.backoff);
+      this.backoff = Math.min(this.backoff * 2, BACKOFF_MAX_MS);
+    };
+  }
+
+  /** 帧发出去返回 true；连接没开返回 false（调用方决定提示） */
+  send(frame: ClientFrame): boolean {
+    if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(frame));
+    return true;
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.clearPing();
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.ws?.close(1000, "bye");
+    this.ws = null;
+  }
+
+  private clearPing() {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+}

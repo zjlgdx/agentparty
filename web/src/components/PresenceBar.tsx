@@ -1,0 +1,55 @@
+// 顶部 presence 条：每参与者一个手绘胶囊（名字 + 蜡笔状态点 + note + 相对时间），
+// 右端挂连接状态。"对方卡在哪"一眼可见（spec §9 第 3 块）。
+import type { PresenceEntry, Sender } from "@agentparty/shared";
+import { useEffect, useState } from "react";
+import { fmtRel } from "../lib/time";
+import type { SocketStatus } from "../lib/ws";
+
+interface Props {
+  presence: Record<string, PresenceEntry>;
+  participants: Sender[];
+  status: SocketStatus;
+}
+
+interface Item {
+  name: string;
+  state: string; // PresenceState | "online"（已连接但还没报过 status）
+  note: string | null;
+  ts: number | null;
+}
+
+export function PresenceBar({ presence, participants, status }: Props) {
+  // 相对时间 30s 刷一次
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const names = [...new Set([...participants.map((p) => p.name), ...Object.keys(presence)])].sort();
+  const items: Item[] = names.map((name) => {
+    const entry = presence[name];
+    const connected = participants.some((p) => p.name === name);
+    if (entry && !(connected && entry.state === "offline")) {
+      return { name, state: entry.state, note: entry.note, ts: entry.ts };
+    }
+    return { name, state: connected ? "online" : "offline", note: null, ts: entry?.ts ?? null };
+  });
+
+  return (
+    <div className="presence-bar">
+      {items.map((it) => (
+        <span key={it.name} className={`d-pill presence-pill${it.state === "blocked" ? " presence-pill--blocked" : ""}`}>
+          <span className={`d-dot d-dot--${it.state}`} />
+          <span className="presence-name">{it.name}</span>
+          {it.note !== null && it.note !== "" && <span className="t-mono presence-note">{it.note}</span>}
+          {it.ts !== null && <span className="t-mono presence-ts">{fmtRel(it.ts)}</span>}
+        </span>
+      ))}
+      {items.length === 0 && <span className="t-mono presence-empty">nobody here yet</span>}
+      <span className="conn t-mono" data-s={status}>
+        {status === "open" ? "● live" : `◌ ${status}…`}
+      </span>
+    </div>
+  );
+}
