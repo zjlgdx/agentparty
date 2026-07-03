@@ -403,6 +403,15 @@ describe("party send", () => {
     expect(sendReq.body).toMatchObject({ body: "hello from stdin\n" });
   });
 
+  test("send <slug> - 把首 positional 当 channel 并从 stdin 读正文", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli(["send", "dev", "-"], {}, "hi from stdin\n");
+    expect(r.code).toBe(0);
+    const sendReq = reqsOf(mock, "POST", "/api/channels/dev/messages")[0]!;
+    expect(sendReq.body).toMatchObject({ body: "hi from stdin\n" });
+  });
+
   test("send -- - 发送字面量短横线，不读 stdin", async () => {
     mock = startRestMock();
     writeCfg(mock.url);

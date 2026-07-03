@@ -32,8 +32,27 @@ export async function resolveSendInput(parsed: Parsed): Promise<SendInput | null
     return null;
   }
   const explicit = str(flags.channel);
-  let text = positionals.length > 0 ? positionals.join(" ") : undefined;
-  const channel = resolveChannel(explicit);
+  // 尾部裸 `-`（未被 `--` 字面化）表示正文来自 stdin；仅在此 stdin 语境下首个 positional 才可作 channel，
+  // 即 `send <slug> -`，不给普通 `send <body...>` 重新引入隐式 channel 歧义
+  const lastIdx = positionals.length - 1;
+  const trailingStdin =
+    positionals.length > 0 &&
+    positionals[lastIdx] === "-" &&
+    !(parsed.terminated && lastIdx >= (parsed.terminatedAt ?? 0));
+
+  let channelArg = explicit;
+  let text: string | undefined;
+  let readStdin = false;
+  if (trailingStdin && !explicit && positionals.length === 2) {
+    channelArg = positionals[0]; // send <slug> -
+    readStdin = true;
+  } else if (trailingStdin && positionals.length === 1) {
+    readStdin = true; // send -、send --channel C -、send - --
+  } else {
+    text = positionals.length > 0 ? positionals.join(" ") : undefined;
+  }
+
+  const channel = resolveChannel(channelArg);
   if (!channel) {
     console.error("no channel, pass --channel C or bind with: party init --channel C");
     return null;
@@ -42,12 +61,11 @@ export async function resolveSendInput(parsed: Parsed): Promise<SendInput | null
     console.error("channel must match [a-z0-9][a-z0-9-]{0,63}");
     return null;
   }
-  if (text === undefined) {
+  if (readStdin) {
+    text = await Bun.stdin.text();
+  } else if (text === undefined) {
     console.error("missing message body (use - to read stdin)");
     return null;
-  }
-  if (text === "-" && (!parsed.terminated || (parsed.terminatedAt ?? 0) > 0)) {
-    text = await Bun.stdin.text();
   }
   const mentions = strArray(flags.mention) ?? [];
   if (mentions.some((mention) => !isName(mention))) {
