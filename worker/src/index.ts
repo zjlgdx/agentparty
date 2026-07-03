@@ -335,6 +335,11 @@ app.post("/api/channels", async (c) => {
   if (c.get("identity").role === "readonly") {
     return c.json(errorBody("unauthorized", "readonly token cannot create channels"), 403);
   }
+  // channel-scoped token 被绑死在单个已存在频道（跨公司邀请用），不得借建频道逃出 scope：
+  // 否则递给外部方的 scoped token 能以房主账号名义创建任意新频道（含 public、抢占 slug）。
+  if (c.get("identity").channel_scope != null) {
+    return c.json(errorBody("forbidden", "channel-scoped token cannot create channels"), 403);
+  }
   const now = Date.now();
   const creator = c.get("identity");
   try {

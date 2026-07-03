@@ -481,6 +481,17 @@ describe("channel_scope enforcement (spec §5.4/§5.5)", () => {
     expect(listSlugs).not.toContain(mine);
   });
 
+  it("scoped token cannot create channels (不得借建频道逃出 scope)", async () => {
+    const acct = `${uniq("acct")}@leeguoo.com`;
+    const { token: scoped } = await seedToken("agent", uniq("bcorp"), { owner: acct, channelScope: "collab" });
+    const res = await api("/api/channels", scoped, {
+      method: "POST",
+      body: JSON.stringify({ slug: uniq("squat"), kind: "standing", visibility: "public" }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { error: { code: string } }).toMatchObject({ error: { code: "forbidden" } });
+  });
+
   it("scoped readonly share token: read-only single channel; can't send; scope mismatch forbidden", async () => {
     const acct = `${uniq("acct")}@leeguoo.com`;
     const { token: ownerTok } = await seedToken("agent", uniq("owner"), { owner: acct });
