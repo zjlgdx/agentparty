@@ -14,6 +14,9 @@ import {
 
 export type { ChannelMode, WebhookFilter };
 
+// 频道可见性：public = 任何鉴权身份可进；private（默认）= 仅 leo 的 ap_ token + 房主（spec §3.2）
+export type ChannelVisibility = "public" | "private";
+
 export class RestError extends Error {
   constructor(
     public status: number,
@@ -29,6 +32,7 @@ export interface ChannelInfo {
   title: string | null;
   kind: ChannelKind;
   mode?: ChannelMode;
+  visibility?: ChannelVisibility;
   archived_at: number | null;
 }
 
@@ -102,7 +106,13 @@ export async function listChannels(server: string, token: string): Promise<Chann
 export async function createChannel(
   server: string,
   token: string,
-  body: { slug: string; title?: string; kind: ChannelKind; mode?: ChannelMode },
+  body: {
+    slug: string;
+    title?: string;
+    kind: ChannelKind;
+    mode?: ChannelMode;
+    visibility?: ChannelVisibility;
+  },
 ): Promise<void> {
   await req(server, "/api/channels", {
     method: "POST",
@@ -192,6 +202,20 @@ export async function resetGuard(server: string, token: string, slug: string): P
   await req(server, `/api/channels/${encodeURIComponent(slug)}/reset-guard`, {
     method: "POST",
     headers: bearerJson(token),
+  });
+}
+
+// 房主踢人：按参与者/token 名字踢出频道（防滥用 MVP，spec §5）
+export async function kickParticipant(
+  server: string,
+  token: string,
+  slug: string,
+  name: string,
+): Promise<void> {
+  await req(server, `/api/channels/${encodeURIComponent(slug)}/kick`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify({ name }),
   });
 }
 

@@ -9,12 +9,13 @@ import {
   listChannels,
   revokeToken,
   type ChannelMode,
+  type ChannelVisibility,
 } from "../rest";
 import { isName, isSlug, normalizeServerUrl } from "../validation";
 
 const USAGE =
-  'usage: party invite "<title>" [--slug s] [--temp] [--party] [--guest-name bob] [--owner label]';
-const INVITE_FLAGS = ["server", "slug", "guest-name", "owner", "temp", "party"];
+  'usage: party invite "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]';
+const INVITE_FLAGS = ["server", "slug", "guest-name", "owner", "temp", "party", "public"];
 const OWNER_MAX = 128;
 const OWNER_RE = /^[\x20-\x7e]{1,128}$/;
 
@@ -26,7 +27,7 @@ export function slugifyTitle(title: string): string {
 }
 
 export async function run(argv: string[]): Promise<number> {
-  const { positionals, flags } = parseArgs(argv, { booleans: ["temp", "party"] });
+  const { positionals, flags } = parseArgs(argv, { booleans: ["temp", "party", "public"] });
   const unknown = unknownFlagError(flags, INVITE_FLAGS);
   if (unknown !== null) {
     console.error(unknown);
@@ -73,6 +74,7 @@ export async function run(argv: string[]): Promise<number> {
   }
   const kind = flags.temp === true ? "temp" : "standing";
   const mode: ChannelMode = flags.party === true ? "party" : "normal";
+  const visibility: ChannelVisibility = flags.public === true ? "public" : "private";
   let guestCreated = false;
 
   try {
@@ -92,23 +94,26 @@ export async function run(argv: string[]): Promise<number> {
     // 2. 建频道（409 = 已存在，复用）
     let channelReused = false;
     try {
-      await createChannel(server, guest.token, { slug, title, kind, mode });
+      await createChannel(server, guest.token, { slug, title, kind, mode, visibility });
     } catch (e) {
       if (e instanceof RestError && e.status === 409) channelReused = true;
       else throw e;
     }
 
-    // 打印用的 kind/mode：复用频道时以服务器真实值为准，别拿本地 flag 谎报 party
+    // 打印用的 kind/mode/visibility：复用频道时以服务器真实值为准，别拿本地 flag 谎报
     let displayKind: string = kind;
     let displayMode: ChannelMode | null = mode;
+    let displayVisibility: ChannelVisibility = visibility;
     if (channelReused) {
       displayMode = null;
+      displayVisibility = "private"; // 复用：拉取失败则不拿本地 --public 谎报公开
       try {
         const channels = await listChannels(server, guest.token);
         const found = channels.find((ch) => ch.slug === slug);
         if (found) {
           displayKind = found.kind;
           displayMode = found.mode ?? "normal";
+          displayVisibility = found.visibility ?? "private";
         }
       } catch {
         // 拉取失败：displayMode 保持 null → 打印 (existing channel)，不谎报本地 flag
@@ -125,10 +130,11 @@ export async function run(argv: string[]): Promise<number> {
     }
 
     const line = "─".repeat(60);
+    const publicTag = displayVisibility === "public" ? " · public" : "";
     const channelDesc =
       displayMode === null
-        ? "(existing channel)"
-        : `(${displayKind}${displayMode === "party" ? " · party" : ""})`;
+        ? `(existing channel${publicTag})`
+        : `(${displayKind}${displayMode === "party" ? " · party" : ""}${publicTag})`;
     const webLines =
       shareToken !== null
         ? `网页只读围观（无需安装，直接开）：\n  ${server}/c/${slug}?t=${shareToken}`

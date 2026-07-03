@@ -5,15 +5,16 @@ import {
   archiveChannel,
   createChannel,
   handleRestError,
+  kickParticipant,
   listChannels,
   resetGuard,
 } from "../rest";
-import { isSlug } from "../validation";
+import { isName, isSlug } from "../validation";
 
-const CHANNEL_FLAGS = ["title", "temp", "party"];
+const CHANNEL_FLAGS = ["title", "temp", "party", "public"];
 
 export async function run(argv: string[]): Promise<number> {
-  const { positionals, flags } = parseArgs(argv, { booleans: ["temp", "party"] });
+  const { positionals, flags } = parseArgs(argv, { booleans: ["temp", "party", "public"] });
   const unknown = unknownFlagError(flags, CHANNEL_FLAGS);
   if (unknown !== null) {
     console.error(unknown);
@@ -35,7 +36,9 @@ export async function run(argv: string[]): Promise<number> {
       case "create": {
         const slug = positionals[1];
         if (!slug) {
-          console.error("usage: party channel create <slug> [--title t] [--temp] [--party]");
+          console.error(
+            "usage: party channel create <slug> [--title t] [--temp] [--party] [--public]",
+          );
           return 1;
         }
         if (!isSlug(slug)) {
@@ -47,6 +50,7 @@ export async function run(argv: string[]): Promise<number> {
           title: str(flags.title),
           kind: flags.temp === true ? "temp" : "standing",
           mode: flags.party === true ? "party" : "normal",
+          visibility: flags.public === true ? "public" : "private",
         });
         console.log(`created ${slug}`);
         return 0;
@@ -55,7 +59,10 @@ export async function run(argv: string[]): Promise<number> {
         const channels = await listChannels(cfg.server, cfg.token);
         for (const c of channels) {
           const state = c.archived_at ? "archived" : "active";
-          console.log(`${c.slug}\t${c.kind}\t${c.mode ?? "normal"}\t${state}\t${c.title ?? ""}`);
+          const vis = c.visibility ?? "private";
+          console.log(
+            `${c.slug}\t${c.kind}\t${c.mode ?? "normal"}\t${vis}\t${state}\t${c.title ?? ""}`,
+          );
         }
         return 0;
       }
@@ -87,8 +94,27 @@ export async function run(argv: string[]): Promise<number> {
         console.log(`guard reset ${slug}`);
         return 0;
       }
+      case "kick": {
+        const name = positionals[1];
+        const slug = resolveChannel(positionals[2]);
+        if (!name || !slug) {
+          console.error("usage: party channel kick <name> [slug]");
+          return 1;
+        }
+        if (!isName(name)) {
+          console.error("name must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,63}");
+          return 1;
+        }
+        if (!isSlug(slug)) {
+          console.error("slug must match [a-z0-9][a-z0-9-]{0,63}");
+          return 1;
+        }
+        await kickParticipant(cfg.server, cfg.token, slug, name);
+        console.log(`kicked ${name} from ${slug}`);
+        return 0;
+      }
       default:
-        console.error("usage: party channel create|list|archive|reset-guard");
+        console.error("usage: party channel create|list|archive|reset-guard|kick");
         return 1;
     }
   } catch (e) {

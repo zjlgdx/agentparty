@@ -17,8 +17,8 @@ commands:
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
   status    [channel|--channel C] working|waiting|blocked|done [-m note]
   history   [channel|--channel C] [--since seq] [--limit n]
-  channel   create <slug> [--title t] [--temp] [--party] | list | archive [slug] | reset-guard [slug]
-  invite    "<title>" [--slug s] [--temp] [--party] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
+  channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug]
+  invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|all] | remove <channel> --name n | list <channel>
   token     create --name n --role agent|human|readonly [--owner label] | revoke <name>   (ADMIN_SECRET env)
 

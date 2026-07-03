@@ -89,6 +89,7 @@ describe("party invite", () => {
       title: "Fix Login Bug",
       kind: "standing",
       mode: "normal",
+      visibility: "private",
     });
     // 建频道用刚铸的 guest token
     expect(chanReq.headers.authorization).toBe("Bearer ap_fix-login-bug-guest_secret");
@@ -144,6 +145,7 @@ describe("party invite", () => {
       title: "修复登录",
       kind: "temp",
       mode: "party",
+      visibility: "private",
     });
     expect(r.stdout).toContain("(temp · party)");
     expect(r.stdout).toContain("--token ap_bob_secret --channel hotfix");
@@ -831,10 +833,11 @@ describe("party channel create mode", () => {
       title: "作战室",
       kind: "standing",
       mode: "party",
+      visibility: "private",
     });
   });
 
-  test("默认 mode=normal", async () => {
+  test("默认 mode=normal，visibility=private", async () => {
     mock = startRestMock();
     writeCfg(mock.url);
     const r = await runCli(["channel", "create", "dev"]);
@@ -843,6 +846,20 @@ describe("party channel create mode", () => {
       slug: "dev",
       kind: "standing",
       mode: "normal",
+      visibility: "private",
+    });
+  });
+
+  test("--public 发送 visibility=public", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli(["channel", "create", "town-square", "--public"]);
+    expect(r.code).toBe(0);
+    expect(reqsOf(mock, "POST", "/api/channels")[0]!.body).toEqual({
+      slug: "town-square",
+      kind: "standing",
+      mode: "normal",
+      visibility: "public",
     });
   });
 
@@ -862,6 +879,65 @@ describe("party channel create mode", () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("slug must match");
     expect(mock.requests.length).toBe(0);
+  });
+});
+
+describe("party channel kick", () => {
+  test("kick <name> <slug> 调 POST /kick，body 带 name", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli(["channel", "kick", "troll", "town-square"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("kicked troll from town-square");
+    const kickReqs = reqsOf(mock, "POST", "/api/channels/town-square/kick");
+    expect(kickReqs.length).toBe(1);
+    expect(kickReqs[0]!.body).toEqual({ name: "troll" });
+    expect(kickReqs[0]!.headers.authorization).toBe("Bearer ap_tok");
+  });
+
+  test("省略 slug 时用绑定频道", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    writeWorkspaceState("ops");
+    const r = await runCli(["channel", "kick", "troll"]);
+    expect(r.code).toBe(0);
+    expect(reqsOf(mock, "POST", "/api/channels/ops/kick").length).toBe(1);
+  });
+
+  test("缺 name 退出 1 且不发请求", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli(["channel", "kick"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("usage: party channel kick");
+    expect(mock.requests.length).toBe(0);
+  });
+
+  test("非法 name 本地拒绝且不发请求", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli(["channel", "kick", ":bad", "town-square"]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("name must match");
+    expect(mock.requests.length).toBe(0);
+  });
+});
+
+describe("party invite --public", () => {
+  test("--public 建 public 频道并在接入包标注", async () => {
+    mock = startRestMock();
+    const r = await runCli(["invite", "Town Square", "--public", "--server", mock.url], {
+      ADMIN_SECRET: "s3cret",
+    });
+    expect(r.code).toBe(0);
+    expect(reqsOf(mock, "POST", "/api/channels")[0]!.body).toEqual({
+      slug: "town-square",
+      title: "Town Square",
+      kind: "standing",
+      mode: "normal",
+      visibility: "public",
+    });
+    expect(r.stdout).toContain("· public");
   });
 });
 

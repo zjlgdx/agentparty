@@ -59,6 +59,9 @@ export function startRestMock(handler?: RestHandler): RestMock {
       if (r.method === "POST" && /^\/api\/channels\/[^/]+\/messages$/.test(r.path)) {
         return Response.json({ seq: 1 });
       }
+      if (r.method === "POST" && /^\/api\/channels\/[^/]+\/kick$/.test(r.path)) {
+        return Response.json({ ok: true });
+      }
       if (r.method === "GET" && /^\/api\/channels\/[^/]+\/messages$/.test(r.path)) {
         return Response.json({ messages: [] });
       }
