@@ -4,6 +4,7 @@ import type { ChannelKind, ChannelMode, RestErrorCode, TokenRole, WebhookFilter 
 import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import { getServerByName } from "partyserver";
+import { canAccessChannel, isChannelModerator } from "./acl";
 import {
   extractBearer,
   lookupToken,
@@ -30,6 +31,7 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ROLES: readonly string[] = ["agent", "human", "readonly"] satisfies TokenRole[];
 const KINDS: readonly string[] = ["standing", "temp"] satisfies ChannelKind[];
 const MODES: readonly string[] = ["normal", "party"] satisfies ChannelMode[];
+const VISIBILITIES: readonly string[] = ["public", "private"];
 const WEBHOOK_FILTERS: readonly string[] = ["mentions", "all"] satisfies WebhookFilter[];
 const WEBHOOK_URL_MAX = 2048;
 const WEBHOOK_SECRET_MAX = 4096;
@@ -85,9 +87,16 @@ const requireBearer = createMiddleware<AppContext>(async (c, next) => {
 
 async function loadChannel(db: D1Database, slug: string) {
   return db
-    .prepare("SELECT slug, kind, mode, archived_at FROM channels WHERE slug = ?")
+    .prepare("SELECT slug, kind, mode, archived_at, created_by, visibility FROM channels WHERE slug = ?")
     .bind(slug)
-    .first<{ slug: string; kind: string; mode: string; archived_at: number | null }>();
+    .first<{
+      slug: string;
+      kind: string;
+      mode: string;
+      archived_at: number | null;
+      created_by: string | null;
+      visibility: string;
+    }>();
 }
 
 // do 侧按 meta 缓存 mode/kind/host（loop guard 分档、temp 归档、webhook permalink 都要用）
@@ -265,7 +274,7 @@ interface ChannelSummary {
 
 app.get("/api/channels", async (c) => {
   const { results } = await c.env.DB.prepare(
-    "SELECT slug, title, topic, kind, mode, created_at, archived_at FROM channels ORDER BY created_at, id",
+    "SELECT slug, title, topic, kind, mode, visibility, created_at, archived_at FROM channels ORDER BY created_at, id",
   ).all<{ slug: string }>();
   const channels = await Promise.all(
     results.map(async (row) => {
@@ -287,11 +296,13 @@ app.get("/api/channels", async (c) => {
 
 app.post("/api/channels", async (c) => {
   const body = (await c.req.json().catch(() => null)) as
-    | { slug?: unknown; title?: unknown; kind?: unknown; mode?: unknown }
+    | { slug?: unknown; title?: unknown; kind?: unknown; mode?: unknown; visibility?: unknown }
     | null;
   const slug = typeof body?.slug === "string" ? body.slug : "";
   const kind = body?.kind === undefined ? "standing" : body.kind;
   const mode = body?.mode === undefined ? "normal" : body.mode;
+  // 默认 private = 零破坏（spec §3.1）
+  const visibility = body?.visibility === undefined ? "private" : body.visibility;
   const title = typeof body?.title === "string" ? body.title : null;
   if (!SLUG_RE.test(slug) || typeof kind !== "string" || !KINDS.includes(kind)) {
     return c.json(errorBody("bad_request", "valid slug and kind (standing|temp) required"), 400);
@@ -299,15 +310,18 @@ app.post("/api/channels", async (c) => {
   if (typeof mode !== "string" || !MODES.includes(mode)) {
     return c.json(errorBody("bad_request", "mode must be normal or party"), 400);
   }
+  if (typeof visibility !== "string" || !VISIBILITIES.includes(visibility)) {
+    return c.json(errorBody("bad_request", "visibility must be public or private"), 400);
+  }
   if (c.get("identity").role === "readonly") {
     return c.json(errorBody("unauthorized", "readonly token cannot create channels"), 403);
   }
   const now = Date.now();
   try {
     await c.env.DB.prepare(
-      "INSERT INTO channels (slug, title, kind, mode, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO channels (slug, title, kind, mode, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-      .bind(slug, title, kind, mode, c.get("identity").name, now)
+      .bind(slug, title, kind, mode, visibility, c.get("identity").name, now)
       .run();
   } catch {
     return c.json(errorBody("conflict", "slug already exists"), 409);
@@ -332,13 +346,17 @@ app.post("/api/channels", async (c) => {
       return c.json(errorBody("unavailable", "temp channel initialization failed"), 503);
     }
   }
-  return c.json({ slug, title, kind, mode }, 201);
+  return c.json({ slug, title, kind, mode, visibility }, 201);
 });
 
 app.get("/api/channels/:slug/messages", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  // 防粉丝用 REST 绕过 WS 读私有频道历史（spec §3.2）
+  if (!canAccessChannel(c.get("identity"), channel)) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
   const stub = await getServerByName(c.env.CHANNELS, slug);
   const search = new URL(c.req.url).search;
   return stub.fetch(
@@ -352,10 +370,14 @@ app.post("/api/channels/:slug/messages", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  // 私有频道仅 ap_ token 或房主可发（spec §3.2）；写权限的 readonly 限制在 do 侧
+  if (!canAccessChannel(identity, channel)) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
   if (channel.archived_at !== null) {
     return c.json(errorBody("archived", "channel is archived"), 410);
   }
-  const identity = c.get("identity");
   const stub = await getServerByName(c.env.CHANNELS, slug);
   return stub.fetch(
     new Request("https://do/internal/messages", {
@@ -486,6 +508,32 @@ app.post("/api/channels/:slug/archive", async (c) => {
   return c.json({ ok: true });
 });
 
+// 踢人（spec §5 防滥用 MVP）：房主或 ap_ token 把某 name 的存活 ws 踢下线
+app.post("/api/channels/:slug/kick", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!isChannelModerator(c.get("identity"), channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can kick"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as { name?: unknown } | null;
+  // 被踢者 name 可能是 OIDC sub（含 NAME_RE 之外的字符），只做非空 + 长度校验，不套 NAME_RE
+  const name = typeof body?.name === "string" ? body.name : "";
+  if (!name || name.length > 256) {
+    return c.json(errorBody("bad_request", "valid name required"), 400);
+  }
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  const res = await stub.fetch(
+    new Request("https://do/internal/kick", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      headers: { "content-type": "application/json", "x-partykit-room": slug },
+    }),
+  );
+  if (!res.ok) return c.json(errorBody("unavailable", "kick coordination failed"), 503);
+  return c.json({ ok: true });
+});
+
 app.post("/api/channels/:slug/reset-guard", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
@@ -513,6 +561,22 @@ app.get("/api/channels/:slug/ws", async (c) => {
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
+  // 私有频道粉丝（OIDC 非房主）连 WS 前即挡下（spec §3.2），不进 do。
+  // 用 accept-then-close(1008,"forbidden") 而非 HTTP 403：浏览器 WebSocket 只对 close code/reason
+  // 敏感，握手阶段的 403 在客户端仅表现为 1006（无 reason），会被误判为普通断线而无限重连；
+  // 1008+"forbidden" 与 archived 同套路，ws.ts 据此识别终局、停重连、提示（不进 do，零 DO 负载）。
+  if (!canAccessChannel(identity, channel)) {
+    const requested = c.req
+      .header("sec-websocket-protocol")
+      ?.split(",")
+      .map((part) => part.trim());
+    const pair = new WebSocketPair();
+    pair[1].accept();
+    pair[1].close(1008, "forbidden");
+    const headers = new Headers();
+    if (requested?.includes("agentparty")) headers.set("Sec-WebSocket-Protocol", "agentparty");
+    return new Response(null, { status: 101, webSocket: pair[0], headers });
+  }
   const stub = await getServerByName(c.env.CHANNELS, slug);
   // new Request(c.req.raw) 会带上客户端所有头：升级请求里任何 x-ap-* 都是客户端注入的，
   // 先逐个剥离再写 worker 权威值，否则 readonly 能靠 x-ap-archived:1 提权归档活频道、

@@ -49,7 +49,7 @@ export type ErrorCode =
   | "archived"
   | "not_found";
 
-export type RestErrorCode = ErrorCode | "conflict" | "unavailable";
+export type RestErrorCode = ErrorCode | "conflict" | "unavailable" | "forbidden";
 
 export interface Sender {
   name: string;
