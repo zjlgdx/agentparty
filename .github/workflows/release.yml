@@ -23,16 +23,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # target = bun 交叉编译三元组；asset = install.sh/ps1 请求的简洁平台名
+        # （去掉 bun- 前缀、不含 version）。资产名统一为 party-<asset>.tar.gz。
         include:
           - target: bun-linux-x64
+            asset: linux-x64
             ext: ""
           - target: bun-linux-arm64
+            asset: linux-arm64
             ext: ""
           - target: bun-darwin-x64
+            asset: darwin-x64
             ext: ""
           - target: bun-darwin-arm64
+            asset: darwin-arm64
             ext: ""
           - target: bun-windows-x64
+            asset: windows-x64
             ext: ".exe"
     steps:
       - uses: actions/checkout@v4
@@ -55,31 +62,49 @@ jobs:
           bun build --compile --target=${{ matrix.target }} \
             ./src/index.ts --outfile "party${{ matrix.ext }}"
 
-      # 打 tar.gz + sha256（sha256 文件里存 tar.gz 的名字，install.sh 直接 sha256sum -c）
+      # 打 tar.gz + sha256（资产名与 install.sh/ps1 请求一致：party-<asset>.tar.gz）
+      # sha256 文件里存 tar.gz 的名字，install 侧直接取第一段 hash 比对。
       - name: package
         id: pkg
         env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
         run: |
-          pkg="party-${VERSION}-${TARGET}.tar.gz"
+          pkg="party-${ASSET}.tar.gz"
           tar -czf "$pkg" -C cli "party${{ matrix.ext }}"
           sha256sum "$pkg" > "${pkg}.sha256"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
 
-      # 对 tar.gz 生成构建溯源（gh attestation verify 可增强验证；install.sh 主链路走内嵌 cosign 公钥离线验）
+      # cosign 离线验签链路：用 secrets 里的私钥对每个 tarball 签名，产出 <pkg>.sig。
+      # install.sh/ps1 内嵌 pinned 公钥离线 verify-blob。未配私钥时跳过（install 侧回退 sha256）。
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: sign blob
+        id: sign
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          PKG: ${{ steps.pkg.outputs.pkg }}
+        run: |
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
+            echo "::warning::COSIGN_PRIVATE_KEY 未配置 — 跳过签名（install 侧仅 sha256）"
+            exit 0
+          fi
+          cosign sign-blob --yes --key env://COSIGN_PRIVATE_KEY \
+            "$PKG" --output-signature "${PKG}.sig"
+
+      # 保留 attest-build-provenance 作为额外溯源层（gh attestation verify 可增强验证）
       - name: attest provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ steps.pkg.outputs.pkg }}
 
+      # party-*.tar.gz* 一把捞 tar.gz / .sha256 / .sig（.sig 未签名时缺省，glob 不报错）
       - name: upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: |
-            ${{ steps.pkg.outputs.pkg }}
-            ${{ steps.pkg.outputs.pkg }}.sha256
+          name: ${{ matrix.asset }}
+          path: party-*.tar.gz*
           if-no-files-found: error
           retention-days: 7
 
@@ -97,11 +122,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # .sig 是可选层（未配 COSIGN_PRIVATE_KEY 时不存在），故 fail_on_unmatched_files:false；
+      # tar.gz / .sha256 的存在性已由 build job 的 if-no-files-found:error 兜底保证。
       - name: upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.tar.gz.sig

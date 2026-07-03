@@ -39,7 +39,8 @@ bun install --frozen-lockfile
 echo "==> compile ($target)"
 ( cd cli && bun build --compile --target="$target" ./src/index.ts --outfile "party${ext}" )
 
-pkg="party-${version}-${target}.tar.gz"
+# 资产名与 install.sh/ps1 请求一致：party-<os>-<arch>.tar.gz（用作 file:// 离线 mirror 时可直接命中）
+pkg="party-${os_part}-${arch_part}.tar.gz"
 echo "==> package $pkg"
 tar -czf "$out_dir/$pkg" -C cli "party${ext}"
 ( cd "$out_dir" && sha256sum "$pkg" > "${pkg}.sha256" )

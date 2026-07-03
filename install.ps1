@@ -102,6 +102,14 @@ function Sha256-Of {
 }
 
 function Main {
+  # mirror 只允许 https:// 或 file://，拒绝明文 http://（中间人可篡改 tar/sha256 同源）。
+  if ($Mirror -notmatch '^(https|file)://') {
+    if ($Mirror -match '^http://') {
+      Die "AGENTPARTY_MIRROR 拒绝明文 http://（中间人风险），请用 https:// 或 file://"
+    }
+    Die "AGENTPARTY_MIRROR 仅支持 https:// 或 file://: $Mirror"
+  }
+
   $target  = Get-Target
   $version = Resolve-Version
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env bun
 // party — agentparty cli 入口，手写 argv 路由
 
+// 版本号从 package.json 内联（bun --compile 会把 JSON 打进二进制，运行期无需读文件）。
+import pkg from "../package.json" with { type: "json" };
+
+const VERSION = pkg.version;
+
 const HELP = `party — agentparty cli
 
 usage: party <command> [args]
@@ -23,6 +28,10 @@ export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
     console.log(HELP);
+    return 0;
+  }
+  if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+    console.log(VERSION);
     return 0;
   }
   switch (cmd) {

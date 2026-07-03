@@ -42,6 +42,12 @@ describe("cli subprocess", () => {
     expect(r.stdout).toContain("party <command>");
   });
 
+  test("--version 输出非空版本号并 exit 0", async () => {
+    const r = await runCli(["--version"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
   test("unknown command exits 1", async () => {
     const r = await runCli(["nope"]);
     expect(r.code).toBe(1);

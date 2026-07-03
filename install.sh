@@ -134,6 +134,13 @@ main() {
   need curl || die "curl is required"
   need tar  || die "tar is required"
 
+  # mirror 只允许 https:// 或 file://，拒绝明文 http://（中间人可篡改 tar/sha256 同源）。
+  case "$MIRROR" in
+    https://*|file://*) : ;;
+    http://*) die "AGENTPARTY_MIRROR 拒绝明文 http://（中间人风险），请用 https:// 或 file://" ;;
+    *) die "AGENTPARTY_MIRROR 仅支持 https:// 或 file://: $MIRROR" ;;
+  esac
+
   TARGET="$(detect_target)"
   VERSION="$(resolve_version)"
 
