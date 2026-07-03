@@ -282,17 +282,21 @@ export interface Auth {
   token: string;
 }
 
-// bearer 解析：账号会话在则用其 access_token（自动刷新），否则回落 config.json 的 ap_ token。
+// bearer 解析：显式绑定的 workspace 凭据（party init --token 写的 config.token）优先，
+// 无则回落账号会话（纯 party login 的人类交互场景），自动刷新其 access_token。
+// 关键：agent 用 `party init --token <agent-token>` 接入后必须以「该 agent」的身份发言——
+// 若让残留的人类账号会话顶替，agent 就会以「人」的名义说话，且过期会话还会直接 401
+// （「让 agent 加入」踩过：init 写了 ap_ token，却被旧 account.json 顶掉导致 send 失败）。
 // server 优先 config（频道绑定所在），仅账号会话单独存在时用其 server。
 export async function resolveAuth(): Promise<Auth | null> {
-  const sess = readAccount();
   const cfg = readConfig();
+  const sess = readAccount();
   const server = cfg?.server ?? sess?.server;
   if (!server) return null;
+  if (cfg?.token) return { server, token: cfg.token };
   if (sess?.refresh_token) {
     const { token } = await ensureFreshAccess(sess);
     return { server, token };
   }
-  if (cfg) return { server, token: cfg.token };
   return null;
 }

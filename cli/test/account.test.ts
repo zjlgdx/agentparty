@@ -130,16 +130,19 @@ describe("ensureFreshAccess", () => {
 });
 
 describe("resolveAuth precedence", () => {
-  test("account session wins as bearer; server prefers config", async () => {
-    writeConfig({ server: "https://ap.example.com", token: "ap_old" });
+  test("config ap_ token wins over a stale account session (agent identity, no 401)", async () => {
+    // 「让 agent 加入」：init 写了 workspace 的 agent token，即便本机残留一个（哪怕过期的）
+    // 人类账号会话，也必须用 config.token 发言——否则 agent 变成以「人」的身份说话，
+    // 且过期会话还会触发换取 access_token 从而 401。config.token 在就不该碰账号会话。
+    writeConfig({ server: "https://ap.example.com", token: "ap_agent" });
     writeAccount({
       server: "https://issuer.example.com",
       refresh_token: "ref",
-      access_token: "acc-live",
-      expires_at: nowSec() + 3600,
+      access_token: "expired",
+      expires_at: nowSec() - 10, // 过期：一旦被选中就得刷新，这里断言它压根不被选中
     });
     const auth = await resolveAuth();
-    expect(auth).toEqual({ server: "https://ap.example.com", token: "acc-live" });
+    expect(auth).toEqual({ server: "https://ap.example.com", token: "ap_agent" });
   });
 
   test("falls back to config ap_ token when logged out", async () => {
