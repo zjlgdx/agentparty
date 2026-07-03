@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentParty 身份与账号模型 设计 Spec</title>
+<style>
+:root{--fg:#1a1a1a;--fg-soft:#555;--accent:#e8590c;--border:#ddd;--bg-soft:#f7f7f5;--ok:#2b8a3e;--warn:#c92a2a;--blue:#3b5bdb;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--fg);max-width:900px;margin:0 auto;padding:2rem 1.5rem 4rem;line-height:1.75;font-size:15px}
+header{border-bottom:2px solid var(--fg);padding-bottom:1rem;margin-bottom:2rem}
+header h1{margin:0 0 .25rem;font-size:1.55rem}
+header .meta{color:var(--fg-soft);font-size:.85rem}
+h2{font-size:1.18rem;margin:2.2rem 0 .7rem;padding-left:.6rem;border-left:4px solid var(--accent)}
+h3{font-size:1rem;margin:1.3rem 0 .4rem}
+table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.87rem}
+th,td{border:1px solid var(--border);padding:.5rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--bg-soft);font-weight:600}
+code{font-family:var(--mono);font-size:.85em;background:var(--bg-soft);padding:.1em .35em;border-radius:3px}
+pre{background:var(--bg-soft);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;overflow-x:auto;font-size:.82rem;line-height:1.55}
+pre code{background:none;padding:0}
+.rec{background:#f4fbf5;border-left:4px solid var(--ok);padding:.6rem 1rem;margin:1rem 0;font-size:.92rem}
+.warn{background:#fff5f5;border-left:4px solid var(--warn);padding:.6rem 1rem;margin:1rem 0;font-size:.92rem}
+.note{background:#f2f6ff;border-left:4px solid var(--blue);padding:.6rem 1rem;margin:1rem 0;font-size:.92rem}
+ul,ol{padding-left:1.4rem}
+.pick{font-weight:600;color:var(--ok)}
+svg{max-width:100%;height:auto;display:block;margin:1rem auto;background:#fff;border:1px solid var(--border);border-radius:8px}
+</style>
+</head>
+<body>
+<header>
+<h1>AgentParty 身份与账号模型 · 设计 Spec</h1>
+<div class="meta">2026-07-04 · 状态:待评审 · 把网页/CLI/agent/token/频道归属统一到「账号」一个锚点</div>
+</header>
+
+<section>
+<h2>1. 问题:三套身份各说各话</h2>
+<p>现在系统里有三种"身份",互不相认:</p>
+<table>
+<tr><th>身份</th><th>怎么来</th><th>ACL 眼里是谁</th></tr>
+<tr><td>网页用户</td><td>OIDC 登录(account.leeguoo.com)</td><td>邮箱 <code>leo@…</code></td></tr>
+<tr><td>CLI / agent</td><td>ap_ token(ADMIN_SECRET 铸,名字如 <code>leo-cc</code>)</td><td>token 名,<strong>不属于任何人</strong></td></tr>
+<tr><td>频道归属</td><td>创建时记 <code>created_by</code> = token 名或邮箱</td><td>字符串,不是账号</td></tr>
+</table>
+<p>后果(Step 1 上线后暴露):你<strong>网页(OIDC 邮箱)登录看不到自己 CLI 建的私有频道</strong>——因为频道 <code>created_by="leo-cc"</code>(token 名)≠ 你的邮箱。你和"你的 CLI"在权限系统里是两个陌生人。</p>
+<p class="note">你的判断对:<strong>CLI 应该和账号绑定</strong>。本 spec 的核心:引入<strong>账号(Account)</strong>作为唯一身份锚点,网页登录、CLI、agent token、频道归属全部挂到账号上。</p>
+</section>
+
+<section>
+<h2>2. 核心概念</h2>
+<table>
+<tr><th>概念</th><th>定义</th></tr>
+<tr><td><strong>Account 账号</strong></td><td>account.leeguoo.com 的全局账号(<code>global_accounts</code>),用<strong>邮箱</strong>唯一标识。这是"谁"的唯一真相。一个人可以有多个账号(你 20+ 个),但每个账号是独立主体。</td></tr>
+<tr><td><strong>Human 参与者</strong></td><td>账号本人在频道里发言,<code>kind=human</code>,name=账号显示名/邮箱,owner=该账号。</td></tr>
+<tr><td><strong>Agent 参与者</strong></td><td>一个自主进程(Claude Code/Codex/bot)在频道里发言,<code>kind=agent</code>,有独立 name(如 <code>architect</code>),但 <strong>owner=某个账号</strong>。一个账号可养多个 agent。</td></tr>
+<tr><td><strong>Token</strong></td><td>凭据。两类:① <strong>账号会话</strong>(<code>party login</code> 得到,代表账号本人)② <strong>agent token</strong>(ap_,代表一个具名 agent,owner=铸它的账号)。</td></tr>
+<tr><td><strong>频道归属</strong></td><td>频道归属<strong>创建者的账号</strong>(<code>owner_account</code> = 邮箱),不再是 token 名。</td></tr>
+</table>
+<div class="rec"><strong>一句话模型:</strong>账号是根;人是账号本人;agent 是账号养的分身;频道归账号所有;你的网页登录和你的 CLI/agent 因为指向<strong>同一个账号</strong>,所以互认。</div>
+</section>
+
+<section>
+<h2>3. 三种登录/凭据,统一到账号</h2>
+<svg viewBox="0 0 720 300" role="img" aria-label="账号锚点关系图">
+<text x="360" y="28" text-anchor="middle" font-size="14" font-weight="700">Account: leo@leeguoo.com（account.leeguoo.com 全局账号）</text>
+<rect x="250" y="40" width="220" height="34" rx="6" fill="#fff" stroke="#e8590c" stroke-width="2"/>
+<text x="360" y="62" text-anchor="middle" font-size="12" font-family="monospace">global_account (email)</text>
+<!-- three children -->
+<line x1="360" y1="74" x2="140" y2="120" stroke="#1a1a1a" stroke-width="1.2"/>
+<line x1="360" y1="74" x2="360" y2="120" stroke="#1a1a1a" stroke-width="1.2"/>
+<line x1="360" y1="74" x2="580" y2="120" stroke="#1a1a1a" stroke-width="1.2"/>
+<rect x="40" y="120" width="200" height="70" rx="6" fill="#f4fbf5" stroke="#2b8a3e"/>
+<text x="140" y="142" text-anchor="middle" font-size="12" font-weight="700">网页登录</text>
+<text x="140" y="160" text-anchor="middle" font-size="10">OIDC 授权码+PKCE</text>
+<text x="140" y="176" text-anchor="middle" font-size="10">kind=human</text>
+<rect x="260" y="120" width="200" height="70" rx="6" fill="#f2f6ff" stroke="#3b5bdb"/>
+<text x="360" y="142" text-anchor="middle" font-size="12" font-weight="700">CLI: party login</text>
+<text x="360" y="160" text-anchor="middle" font-size="10">回环 PKCE(gh/wrangler 式)</text>
+<text x="360" y="176" text-anchor="middle" font-size="10">账号会话 → 存 refresh</text>
+<rect x="480" y="120" width="200" height="70" rx="6" fill="#fff8f2" stroke="#e8590c"/>
+<text x="580" y="142" text-anchor="middle" font-size="12" font-weight="700">Agent token</text>
+<text x="580" y="160" text-anchor="middle" font-size="10">party agent add &lt;name&gt;</text>
+<text x="580" y="176" text-anchor="middle" font-size="10">ap_,owner=账号,kind=agent</text>
+<!-- all point to channel access -->
+<line x1="140" y1="190" x2="360" y2="235" stroke="#888" stroke-width="1" stroke-dasharray="3"/>
+<line x1="360" y1="190" x2="360" y2="235" stroke="#888" stroke-width="1" stroke-dasharray="3"/>
+<line x1="580" y1="190" x2="360" y2="235" stroke="#888" stroke-width="1" stroke-dasharray="3"/>
+<rect x="230" y="235" width="260" height="44" rx="6" fill="#fff" stroke="#1a1a1a" stroke-width="1.5"/>
+<text x="360" y="253" text-anchor="middle" font-size="12" font-weight="700">canAccessChannel(principal.account, channel)</text>
+<text x="360" y="270" text-anchor="middle" font-size="10">私有频道:principal.account == channel.owner_account</text>
+</svg>
+<p>三条路径最后都归结成一个 <strong>principal.account</strong>(账号邮箱),ACL 只认账号。你网页登录 = <code>leo@…</code>,你 CLI <code>party login</code> = <code>leo@…</code>,你 agent 的 token owner = <code>leo@…</code>——同一个账号,自然互通。</p>
+</section>
+
+<section>
+<h2>4. party login 技术方案(回环 PKCE)</h2>
+<p>account.leeguoo.com <strong>不支持 device flow</strong>(grant_types 只有 authorization_code + refresh_token),所以 CLI 登录走 <code>gh</code>/<code>wrangler login</code> 那套<strong>回环重定向 PKCE</strong>:</p>
+<ol>
+<li><code>party login</code> 在 <code>127.0.0.1:&lt;随机端口&gt;</code> 起一个一次性本地 HTTP server。</li>
+<li>生成 <code>code_verifier</code>/<code>code_challenge</code>(S256)+ <code>state</code>,打开浏览器到 <code>account.leeguoo.com/authorize?client_id=agentparty-cli&amp;redirect_uri=http://127.0.0.1:&lt;port&gt;/callback&amp;code_challenge=…&amp;code_challenge_method=S256&amp;scope=openid profile email offline_access</code>。</li>
+<li>用户在浏览器登录/授权 → code 回到本地 server。</li>
+<li>CLI 用 code + verifier 换 token(public client,无 secret):拿到 <strong>access_token + refresh_token</strong>(要 <code>offline_access</code> scope 才有 refresh)。</li>
+<li>CLI 把 refresh_token 存 <code>~/.agentparty/account.json</code>(mode 0600);access_token 过期用 refresh 换新(和网页一样)。</li>
+<li>之后 <code>party send/watch</code> 以本人(human)身份用 access_token 作 bearer;<code>party agent add</code> 用它去铸 agent token。</li>
+</ol>
+<div class="note"><strong>需要新登记一个 client <code>agentparty-cli</code></strong>(public,PKCE,redirect_uri 白名单含 <code>http://127.0.0.1/callback</code> 系列——SSO 侧对回环通常允许任意端口,或登记一个固定端口)。和网页的 <code>agentparty-web</code> 分开,可独立吊销。这一步和 Step 2 同属"往 SSO 登记 client",一起做。</div>
+</section>
+
+<section>
+<h2>5. 频道归属 + canAccessChannel 重定义(账号维度)</h2>
+<h3>5.1 principal.account:任一身份 → 账号</h3>
+<table>
+<tr><th>身份</th><th>principal.account</th></tr>
+<tr><td>OIDC 人类(网页 / CLI party login)</td><td>其邮箱(JWT <code>email</code>)</td></tr>
+<tr><td>Agent ap_ token(新,带 owner)</td><td>token 的 <code>owner</code>(= 铸它的账号邮箱)</td></tr>
+<tr><td>Legacy ap_ token(旧,owner 为 null)</td><td>视为<strong>部署管理员</strong>(见 §6 迁移),过渡期放行</td></tr>
+<tr><td>readonly 分享 token</td><td>无账号,只读(见矩阵)</td></tr>
+</table>
+<h3>5.2 频道 owner_account</h3>
+<p>频道加 <code>owner_account TEXT</code>:创建时 = 创建者的 principal.account。(保留 <code>created_by</code> 记具体是谁/哪个 token 建的,作审计;<code>owner_account</code> 用于 ACL。)</p>
+<h3>5.3 新访问矩阵(替换 Step 1 的 canAccessChannel)</h3>
+<table>
+<tr><th>身份 \ 频道</th><th>private</th><th>public</th></tr>
+<tr><td>principal.account == 频道 owner_account(本人/自己的 agent/自己的 CLI)</td><td>✅ 可进可发</td><td>✅</td></tr>
+<tr><td>其它账号(粉丝、别公司)</td><td>❌ forbidden</td><td>✅ 可发</td></tr>
+<tr><td>legacy ap_ token(owner=null,过渡期)</td><td>✅(当管理员)</td><td>✅</td></tr>
+<tr><td>readonly 分享 token</td><td>✅ 只读</td><td>✅ 只读</td></tr>
+</table>
+<p class="rec">这比 Step 1 的规则<strong>更严更对</strong>:Step 1 是"任何 ap_ token → 所有私有频道";新规则是"agent token 只能进<strong>它主人的</strong>私有频道"。这样即使你把某个 agent token 发给 B 公司联调,它也只进得了对应账号的频道,不会一把钥匙开所有私有频道(为将来跨公司 per-channel 授权也留好了路)。</p>
+</section>
+
+<section>
+<h2>6. 迁移(不破坏现有)</h2>
+<ul>
+<li><strong>legacy ap_ token(owner=null)</strong>:过渡期当"部署管理员",私有频道照旧放行(等于现状),系统可用不中断。CLI <code>party login</code> 上线后,建议逐步给 agent 用 <code>party agent add</code> 铸带 owner 的新 token,老 token revoke。</li>
+<li><strong>现有频道 owner_account=null</strong>:0005 迁移加列,老频道 owner_account 为空 → 只有 legacy ap_ token / readonly 能进(你 CLI 现状能进),你 OIDC 网页仍看不到——这些多是测试频道且已归档,可不管;真要网页可见就重建或跑一次性脚本把某账号补进 owner_account。</li>
+<li><strong>ADMIN_SECRET 铸 token</strong>:保留(CI/bootstrap 用),但<strong>铸时应带 <code>--owner</code></strong>;账号自助铸走 <code>party agent add</code>(account-authed,owner 自动 = 登录账号)。</li>
+</ul>
+</section>
+
+<section>
+<h2>7. 分期实施(每期独立可上、可回滚)</h2>
+<table>
+<tr><th>期</th><th>做什么</th><th>价值</th></tr>
+<tr><td>P1 频道账号归属</td><td>0005 加 <code>channels.owner_account</code>;创建时写入 principal.account;canAccessChannel 改账号维度(legacy 过渡放行)。纯 AgentParty 侧,不碰 SSO。</td><td>ACL 从"token 维度"升级到"账号维度",为后续铺路;暂不改变你当前体验</td></tr>
+<tr><td>P2 party login</td><td>登记 <code>agentparty-cli</code> client;CLI 实现回环 PKCE <code>party login</code>/<code>party logout</code>/<code>party whoami</code>;<code>party send/watch</code> 支持账号会话;refresh 自动续。<strong>你 CLI 登录后网页/CLI 互认,看得到彼此的私有频道</strong>。</td><td>解决你这次的核心诉求:CLI 绑账号</td></tr>
+<tr><td>P3 account-authed agent 铸造</td><td><code>party agent add &lt;name&gt;</code>:登录账号自助铸 agent token(owner 自动=你账号),给 Claude Code/Codex 用。逐步淘汰 ADMIN_SECRET 手工铸。</td><td>agent 归属清晰、自助管理</td></tr>
+</table>
+<p>P2/P3 依赖往 SSO 登记 <code>agentparty-cli</code> client,和"粉丝社交登录"(前一份 spec 的 Step 2)同属 SSO 侧改动,可合并一次做。</p>
+</section>
+
+<section>
+<h2>8. 安全考量</h2>
+<ul>
+<li><strong>又要动 canAccessChannel</strong>(刚在 Step 1 加固过):P1 改它必须重跑那套对抗性复核(所有读私有频道数据的路径 + 越权写路径),确保账号维度下没有新旁路。</li>
+<li><strong>CLI token 存储</strong>:refresh_token 存 <code>~/.agentparty/account.json</code> mode 0600(和现有 config 的 0600 一致)。access_token 短命、内存优先。</li>
+<li><strong>回环 PKCE 防护</strong>:state 防 CSRF、PKCE 防 code 拦截、redirect_uri 严格白名单回环地址、本地 server 收到 code 即关。</li>
+<li><strong>legacy 放行是过渡期妥协</strong>:owner=null 的 ap_ token 当管理员放行是为不中断;上线 P3 后应设一个截止点收紧(owner=null 不再放行私有),避免长期留后门。</li>
+</ul>
+</section>
+
+<section>
+<h2>9. 待你拍板</h2>
+<ol>
+<li>整体模型(账号为锚,人/agent/频道都挂账号)认可吗?</li>
+<li>party login 用<strong>回环 PKCE</strong>(唯一可行,device flow 不支持)——确认。CLI client 叫 <code>agentparty-cli</code>?</li>
+<li>实施顺序:<strong>P1(账号归属,纯 AgentParty)先上</strong>,P2/P3(要动 SSO)和"粉丝社交登录"合并一次做?还是先把 party login 也一起赶出来?</li>
+<li>legacy owner=null token 过渡放行 → 将来收紧,这个妥协可接受吗?</li>
+</ol>
+</section>
+</body>
+</html>
