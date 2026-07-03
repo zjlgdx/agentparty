@@ -79,14 +79,29 @@ export async function createToken(
   name: string,
   role: TokenRole,
   owner?: string,
-): Promise<{ token: string; name: string; role: TokenRole; owner?: string }> {
-  // owner 仅在给出时进请求体，缺省不发，保持旧调用方的请求形状不变
-  const body = owner !== undefined ? { name, role, owner } : { name, role };
+  channelScope?: string,
+): Promise<{
+  token: string;
+  name: string;
+  role: TokenRole;
+  owner?: string;
+  channel_scope?: string;
+}> {
+  // owner / channel_scope 仅在给出时进请求体，缺省不发，保持旧调用方的请求形状不变
+  const body: Record<string, unknown> = { name, role };
+  if (owner !== undefined) body.owner = owner;
+  if (channelScope !== undefined) body.channel_scope = channelScope;
   return (await req(server, "/api/tokens", {
     method: "POST",
     headers: { "x-admin-secret": adminSecret, "content-type": "application/json" },
     body: JSON.stringify(body),
-  })) as { token: string; name: string; role: TokenRole; owner?: string };
+  })) as {
+    token: string;
+    name: string;
+    role: TokenRole;
+    owner?: string;
+    channel_scope?: string;
+  };
 }
 
 export async function revokeToken(server: string, adminSecret: string, name: string): Promise<void> {

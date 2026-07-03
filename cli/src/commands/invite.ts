@@ -81,7 +81,8 @@ export async function run(argv: string[]): Promise<number> {
     // 1. guest agent token —— 重名不静默顶掉现有 guest，让人换名
     let guest: { token: string };
     try {
-      guest = await createToken(server, adminSecret, guestName, "agent", owner);
+      // channel-scoped agent token：只开这一个频道，递给外部/B 公司也越不了权（spec §5.3）
+      guest = await createToken(server, adminSecret, guestName, "agent", owner, slug);
     } catch (e) {
       if (e instanceof RestError && e.status === 409) {
         console.error(`token ${guestName} 已存在，用 --guest-name 指定其他名字`);
@@ -123,7 +124,8 @@ export async function run(argv: string[]): Promise<number> {
     // 3. share readonly token —— 只在全新频道铸；已存在（409）就【不碰它】，绝不撤销/作废已分发链接
     let shareToken: string | null = null;
     try {
-      shareToken = (await createToken(server, adminSecret, shareName, "readonly")).token;
+      // channel-scoped readonly 分享 token：分享链接只暴露这一个频道
+      shareToken = (await createToken(server, adminSecret, shareName, "readonly", owner, slug)).token;
     } catch (e) {
       if (!(e instanceof RestError && e.status === 409)) throw e;
       // 409 = 已存在，沿用旧只读链接，不重铸也不撤销

@@ -20,7 +20,7 @@ commands:
   channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug]
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|all] | remove <channel> --name n | list <channel>
-  token     create --name n --role agent|human|readonly [--owner label] | revoke <name>   (ADMIN_SECRET env)
+  token     create --name n --role agent|human|readonly --owner label [--channel-scope slug] | revoke <name>   (ADMIN_SECRET env)
 
 exit codes: 0 ok/new message · 2 watch timeout (prints TIMEOUT) · 3 bad token · 4 loop guard · 5 archived`;
 
