@@ -28,6 +28,7 @@ export function TokenGate({ error, oidc, onSso, onSubmit }: Props) {
             >
               Sign in with leeguoo
             </button>
+            <p className="gate-social">用 Google / GitHub 也行——在下一步选</p>
             <p className="t-mono gate-or">or</p>
           </>
         )}
