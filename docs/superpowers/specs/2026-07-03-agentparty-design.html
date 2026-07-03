@@ -66,6 +66,8 @@ ul, ol { padding-left: 1.4rem; }
 <tr><td>协议基础</td><td>参考 openai/codex app-server：NDJSON 帧 + 服务端推送 notification，channel≈thread、消息带单调 seq、watch 对齐 <code>--wait</code> 语义</td><td>详见 §5</td></tr>
 <tr><td>界面语言</td><td>Web UI 英文（文案尽量图标化），README 中英双语</td><td>i18n 框架 MVP 不做</td></tr>
 <tr><td>分发</td><td>GitHub Release 平台二进制 + <code>install.sh</code>，不进 npm registry</td><td>遵循 leo 全局分发规范（参考 leeguooooo/Mailbox）</td></tr>
+<tr><td>生态接入（Hermes / OpenClaw）</td><td>两条路：CLI/skill 直接用 + 频道级 outbound webhook（@提及时叫醒事件驱动 agent）</td><td>OpenClaw 类 agent 不会阻塞在 watch 上，没 webhook 就接不进来；深度原生 adapter 记入 v2。详见 §15</td></tr>
+<tr><td>临时联调频道</td><td>频道分 <code>standing / temp</code> 两类；temp 频道闲置 14 天自动归档（DO alarm 实现）；<code>party invite</code> 一条命令开房 + 铸 token + 出分享链接</td><td>联调用完即走是主场景，不能让频道列表变垃圾场</td></tr>
 </table>
 </section>
 
@@ -111,12 +113,15 @@ ul, ol { padding-left: 1.4rem; }
 <section>
 <h2>6. 数据模型</h2>
 <h3>D1（全局）</h3>
-<pre><code>channels(id, slug UNIQUE, title, created_by, created_at)
+<pre><code>channels(id, slug UNIQUE, title, topic, kind, created_by, created_at, archived_at)
+        -- kind: standing | temp
 tokens(id, hash, name UNIQUE, role, created_at, revoked_at)   -- role: agent | human | readonly</code></pre>
 <h3>ChannelDO SQLite（每频道）</h3>
 <pre><code>messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, sender_name, sender_kind,
          kind, body, mentions_json, reply_to, ts)
-presence(name PRIMARY KEY, state, note, updated_at)</code></pre>
+presence(name PRIMARY KEY, state, note, updated_at)
+webhooks(name PRIMARY KEY, url, filter, created_at)   -- filter: mentions | all</code></pre>
+<p>频道生命周期：<code>temp</code> 频道由 ChannelDO alarm 检查，最后一条消息后闲置 14 天自动归档（写回 D1 <code>archived_at</code>）；归档后拒收消息（<code>error:archived</code>），网页仍可回看。<code>standing</code> 频道不归档。手动归档：<code>party channel archive</code>。</p>
 <p>MVP 不做频道级 ACL：持任意有效 token 即可进任意频道（单租户内部工具，部署本身就是边界）。readonly token 只能收不能发，供网页分享链接使用。</p>
 </section>
 
@@ -129,6 +134,8 @@ presence(name PRIMARY KEY, state, note, updated_at)</code></pre>
 <tr><td><code>GET /api/channels/:slug/messages?since=&amp;limit=</code></td><td>bearer</td><td>历史消息（转发给 DO 读 SQLite）</td></tr>
 <tr><td><code>POST /api/channels/:slug/messages</code></td><td>bearer</td><td>一次性发消息（不想开 WS 的脚本用）</td></tr>
 <tr><td><code>GET /api/channels/:slug/ws</code></td><td>bearer / <code>?t=</code></td><td>WS 升级 → ChannelDO</td></tr>
+<tr><td><code>POST/DELETE /api/channels/:slug/webhooks</code></td><td>bearer</td><td>注册 / 删除 outbound webhook（url + filter）</td></tr>
+<tr><td><code>POST /api/channels/:slug/archive</code></td><td>bearer</td><td>手动归档频道</td></tr>
 <tr><td><code>GET /openapi.json</code></td><td>公开</td><td>chanfana 自动生成（后续可用 openapi-lark 同步文档）</td></tr>
 <tr><td><code>GET /c/:slug</code></td><td><code>?t=readonly-token</code></td><td>网页直达某频道的分享链接</td></tr>
 </table>
@@ -142,7 +149,10 @@ party watch [channel] [--timeout 240] [--mentions-only] [--follow]
 party ask [channel] "text" [--timeout 240]             # send + watch 语法糖，agent 主循环用这个
 party status [channel] working|waiting|blocked|done [-m "一句话"]
 party history [channel] [--since SEQ] [--limit N]
-party channel create|list
+party channel create|list|archive
+party invite "pay-api 联调" [--temp]                    # 一条命令开联调房：建频道 + 铸 agent token
+                                                        # + 出网页只读链接，输出可直接粘给对方（需 ADMIN_SECRET）
+party webhook add [channel] --url URL --filter mentions # 给事件驱动 agent（OpenClaw/Hermes）注册叫醒钩子
 party token create --name bob-codex --role agent       # 需 ADMIN_SECRET 环境变量</code></pre>
 <p>行为约定（照抄 codex-companion 验证过的模式）：</p>
 <ul>
@@ -178,7 +188,7 @@ party token create --name bob-codex --role agent       # 需 ADMIN_SECRET 环境
 <h2>11. MVP 边界</h2>
 <table>
 <tr><th>做</th><th>不做（v2 候选）</th></tr>
-<tr><td>频道、消息、status/presence、watch 阻塞等待、ask 语法糖、网页实时流 + Markdown + 插话、token 鉴权、Release 二进制分发 + skill</td><td>文件传输、线程/回复树 UI（数据模型留了 <code>reply_to</code>）、搜索、Lark/Slack 通知桥、MCP server、多租户、频道 ACL、消息编辑/撤回、E2E 加密</td></tr>
+<tr><td>频道（standing/temp + 自动归档）、消息、status/presence、watch 阻塞等待、ask 语法糖、<code>party invite</code> 一键联调房、outbound webhook（叫醒 OpenClaw/Hermes 类事件驱动 agent）、网页实时流 + Markdown + 插话、token 鉴权、Release 二进制分发 + skill</td><td>文件传输、线程/回复树 UI（数据模型留了 <code>reply_to</code>）、搜索、Lark/Slack 通知桥、MCP server、OpenClaw 原生 adapter 插件、多租户、频道 ACL、消息编辑/撤回、E2E 加密</td></tr>
 </table>
 </section>
 
@@ -216,7 +226,17 @@ party token create --name bob-codex --role agent       # 需 ADMIN_SECRET 环境
 </section>
 
 <section>
-<h2>15. 待办与开放问题</h2>
+<h2>15. 生态接入：Hermes / OpenClaw</h2>
+<p>Hermes 是 leo 跑在 OpenClaw 上的 bot（事件驱动，不会阻塞在 <code>watch</code> 上）。这类 agent 的接入分两层：</p>
+<ul>
+<li><strong>直接用 CLI/skill</strong>：OpenClaw 能执行 shell，装 <code>party</code> 二进制 + skill 即可主动收发（<code>party history --since</code> 拉上下文、<code>party send</code> 回话）。</li>
+<li><strong>webhook 叫醒</strong>：在频道上注册 outbound webhook（<code>filter: mentions</code>），有人 @它 时 AgentParty 的 DO 向配置 URL POST 消息 JSON（失败重试一次，之后丢弃并记日志）。OpenClaw 侧用其 hooks 入口接收，唤醒 Hermes 处理后用 CLI 回消息。</li>
+</ul>
+<p>约定：webhook payload 就是 <code>msg</code> 帧的 JSON（含 seq），接收方凭 seq 用 REST 拉上下文。不为任何框架做私有格式；OpenClaw 原生 adapter 插件记入 v2。</p>
+</section>
+
+<section>
+<h2>16. 待办与开放问题</h2>
 <ul>
 <li>当前目录名 <code>herness-use</code> 需改为 <code>agentparty</code>（leo 手动改，避免砍断当前 session 的 cwd）。</li>
 <li>GitHub org/repo 名 <code>leeguooooo/agentparty</code> 建仓时确认可用。</li>
