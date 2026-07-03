@@ -1,0 +1,107 @@
+name: release
+
+# 触发：推 v* tag 即发布。bun build --compile 支持跨平台交叉编译，
+# 5 个三元组全部在同一台 ubuntu runner 上出包，保证工具链一致、provenance 统一。
+on:
+  push:
+    tags:
+      - "v*"
+
+# 顶层默认最小权限；各 job 按需覆盖。
+permissions:
+  contents: read
+
+jobs:
+  # ── 交叉编译 + 打包 + 构建溯源 ──────────────────────────────
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout
+      id-token: write       # attest-build-provenance 走 sigstore oidc 签名
+      attestations: write   # 写 attestation 到本仓库
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-linux-x64
+            ext: ""
+          - target: bun-linux-arm64
+            ext: ""
+          - target: bun-darwin-x64
+            ext: ""
+          - target: bun-darwin-arm64
+            ext: ""
+          - target: bun-windows-x64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      # 用根 lockfile 装全 workspace，保证 workspace:* 依赖（@agentparty/shared）可解析
+      - name: install deps
+        run: bun install --frozen-lockfile
+
+      - name: derive version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: compile binary
+        working-directory: cli
+        run: |
+          bun build --compile --target=${{ matrix.target }} \
+            ./src/index.ts --outfile "party${{ matrix.ext }}"
+
+      # 打 tar.gz + sha256（sha256 文件里存 tar.gz 的名字，install.sh 直接 sha256sum -c）
+      - name: package
+        id: pkg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          pkg="party-${VERSION}-${TARGET}.tar.gz"
+          tar -czf "$pkg" -C cli "party${{ matrix.ext }}"
+          sha256sum "$pkg" > "${pkg}.sha256"
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+
+      # 对 tar.gz 生成构建溯源（gh attestation verify 可增强验证；install.sh 主链路走内嵌 cosign 公钥离线验）
+      - name: attest provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.pkg.outputs.pkg }}
+
+      - name: upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.pkg }}
+            ${{ steps.pkg.outputs.pkg }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 汇总所有产物挂到该 tag 的 Release ──────────────────────
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 建/改 Release、上传 assets
+    steps:
+      - name: collect artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
