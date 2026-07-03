@@ -1,7 +1,58 @@
 #!/usr/bin/env bun
-// party cli 占位 — init/send/watch/ask 等子命令由后续实现
-import { EXIT_TIMEOUT } from "@agentparty/shared";
+// party — agentparty cli 入口，手写 argv 路由
 
-void EXIT_TIMEOUT;
+const HELP = `party — agentparty cli
 
-console.log("agentparty cli: not implemented yet");
+usage: party <command> [args]
+
+commands:
+  init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
+  send      [channel] <text|-> [--mention name]... [--reply-to seq]
+  watch     [channel] [--timeout 240] [--mentions-only] [--follow]
+  ask       [channel] <text|-> [--timeout 240] [--mention name]... [--mentions-only]
+  status    [channel] working|waiting|blocked|done [-m note]
+  history   [channel] [--since seq] [--limit n]
+  channel   create <slug> [--title t] [--temp] | list | archive [slug] | reset-guard [slug]
+  token     create --name n --role agent|human|readonly | revoke <name>   (ADMIN_SECRET env)
+
+exit codes: 0 ok/new message · 2 watch timeout (prints TIMEOUT) · 3 bad token · 4 loop guard · 5 archived`;
+
+export async function main(argv: string[]): Promise<number> {
+  const [cmd, ...rest] = argv;
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    console.log(HELP);
+    return 0;
+  }
+  switch (cmd) {
+    case "init":
+      return (await import("./commands/init")).run(rest);
+    case "send":
+      return (await import("./commands/send")).run(rest);
+    case "watch":
+      return (await import("./commands/watch")).run(rest);
+    case "ask":
+      return (await import("./commands/ask")).run(rest);
+    case "status":
+      return (await import("./commands/status")).run(rest);
+    case "history":
+      return (await import("./commands/history")).run(rest);
+    case "channel":
+      return (await import("./commands/channel")).run(rest);
+    case "token":
+      return (await import("./commands/token")).run(rest);
+    default:
+      console.error(`unknown command: ${cmd}`);
+      console.log(HELP);
+      return 1;
+  }
+}
+
+if (import.meta.main) {
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (e) => {
+      console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    },
+  );
+}
