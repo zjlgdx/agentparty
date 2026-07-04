@@ -155,6 +155,7 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
             residency: frame.residency,
             wake: frame.wake,
             context: frame.context,
+            lineage: frame.lineage,
           },
         },
       };

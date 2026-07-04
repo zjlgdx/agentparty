@@ -2,7 +2,7 @@
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { SearchHit } from "@agentparty/shared";
+import type { MsgFrame, SearchHit } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { Composer } from "../components/Composer";
 import { MessageCard } from "../components/MessageCard";
@@ -218,6 +218,45 @@ function SearchHitCard({ hit }: { hit: SearchHit }) {
       </header>
       <p className="search-hit-snippet">{hit.snippet === "" ? "(empty)" : hit.snippet}</p>
     </article>
+  );
+}
+
+function DecisionPanel({ messages }: { messages: MsgFrame[] }) {
+  const decisions = messages
+    .filter((m) => m.kind === "status" && m.status?.decision !== undefined)
+    .slice(-5)
+    .reverse();
+  if (decisions.length === 0) return null;
+
+  return (
+    <section className="decision-panel" aria-label="host decisions">
+      <div className="decision-panel-head">
+        <h2 className="decision-title">Host Decisions</h2>
+        <span className="t-mono decision-count">{decisions.length}</span>
+      </div>
+      <ol className="decision-list">
+        {decisions.map((m) => {
+          const decision = m.status!.decision!;
+          const meta = [
+            decision.next !== null ? `next: ${decision.next}` : null,
+            decision.handoff_to !== undefined ? `handoff: ${decision.handoff_to}` : null,
+            decision.takeover_from !== undefined ? `takeover: ${decision.takeover_from}` : null,
+            decision.expires_at !== null ? `expires ${fmtTime(decision.expires_at)}` : null,
+          ].filter((part): part is string => part !== null);
+          return (
+            <li key={m.seq} className="decision-item">
+              <div className="decision-item-head">
+                <span className={`t-mono decision-kind decision-kind--${decision.kind}`}>{decision.kind}</span>
+                <span className="decision-owner">{decision.owner}</span>
+                <span className="t-mono decision-seq">#{m.seq}</span>
+              </div>
+              <p>{decision.decision}</p>
+              {meta.length > 0 && <div className="t-mono decision-meta">{meta.join(" · ")}</div>}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
@@ -511,6 +550,7 @@ export function ChannelPage({
           onClear={clearAgentFilter}
         />
       )}
+      {q === "" && <DecisionPanel messages={state.messages} />}
       {(state.messages.length > 0 || q !== "") && (
         <div className="chan-search-panel">
           <div className="chan-search-row">

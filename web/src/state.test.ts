@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { MsgFrame } from "@agentparty/shared";
+import type { MsgFrame, PresenceFrame } from "@agentparty/shared";
 import { channelReducer, initialChannelState } from "./state";
 
 function msgFrame(seq: number, body: string, over: Partial<MsgFrame> = {}): MsgFrame {
@@ -36,5 +36,25 @@ describe("channel state", () => {
 
     expect(revised.messages).toHaveLength(1);
     expect(revised.messages[0]).toMatchObject({ seq: 6, body: "edited", edited: true });
+  });
+
+  test("preserves lineage on incremental presence frames", () => {
+    const frame: PresenceFrame = {
+      type: "presence",
+      name: "child-a",
+      state: "working",
+      note: "checking",
+      ts: 1_725_000_000_000,
+      lineage: {
+        parent_agent: "parent-a",
+        root_agent: "parent-a",
+        team_id: "team-a",
+        depth: 1,
+        expires_at: 1_725_000_060_000,
+      },
+    };
+    const next = channelReducer(initialChannelState, { type: "frame", frame });
+
+    expect(next.presence["child-a"]?.lineage).toEqual(frame.lineage);
   });
 });
