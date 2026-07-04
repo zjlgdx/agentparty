@@ -19,6 +19,7 @@ import {
   type AgentFilterMode,
 } from "../lib/filters";
 import { fmtTime } from "../lib/time";
+import { summarizeTeams, type TeamSummary } from "../lib/teams";
 import { ChannelSocket } from "../lib/ws";
 import { channelReducer, initialChannelState } from "../state";
 
@@ -260,6 +261,63 @@ function DecisionPanel({ messages }: { messages: MsgFrame[] }) {
   );
 }
 
+function TeamPanel({ teams }: { teams: TeamSummary[] }) {
+  if (teams.length === 0) return null;
+
+  return (
+    <section className="team-panel" aria-label="agent teams">
+      <div className="team-panel-head">
+        <h2 className="team-title">Teams</h2>
+        <span className="t-mono team-count">{teams.length}</span>
+      </div>
+      <ol className="team-list">
+        {teams.map((team) => {
+          const meta = [
+            `root: ${team.rootAgent}`,
+            team.parentAgents.length === 1 ? `parent: ${team.parentAgents[0]}` : `${team.parentAgents.length} parents`,
+            `depth ${team.maxDepth}`,
+            team.expiresAt !== null ? `expires ${fmtTime(team.expiresAt)}` : null,
+            team.lastSeen !== null ? `seen ${fmtTime(team.lastSeen)}` : null,
+          ].filter((part): part is string => part !== null);
+          return (
+            <li key={team.key} className="team-item">
+              <div className="team-item-head">
+                <span className="team-name">{team.teamId}</span>
+                <span className="t-mono team-active">
+                  {team.activeCount}/{team.memberCount} active
+                </span>
+                <span className={`t-mono team-residency team-residency--${team.residency}`}>
+                  {team.residency === "human_driven" ? "manual" : team.residency}
+                </span>
+              </div>
+              <div className="t-mono team-meta">{meta.join(" · ")}</div>
+              <div className="team-members">
+                {team.members.map((member) => (
+                  <span
+                    key={member.name}
+                    className={"t-mono team-member" + (member.active ? " is-active" : "")}
+                    title={[
+                      member.name,
+                      `parent: ${member.parentAgent}`,
+                      `state: ${member.state}`,
+                      `residency: ${member.residency}`,
+                      member.expiresAt !== null ? `expires: ${fmtTime(member.expiresAt)}` : null,
+                      member.lastSeen !== null ? `last seen: ${fmtTime(member.lastSeen)}` : null,
+                    ].filter((part): part is string => part !== null).join(" · ")}
+                  >
+                    <span className={`d-dot d-dot--${member.active ? member.state : "offline"}`} />
+                    <span>{member.name}</span>
+                  </span>
+                ))}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
 export function ChannelPage({
   slug,
   token,
@@ -284,6 +342,7 @@ export function ChannelPage({
   const [guardResetError, setGuardResetError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [seenSeq, setSeenSeq] = useState<number | null>(null);
+  const [teamNow, setTeamNow] = useState(() => Date.now());
   const [agentFilter, setAgentFilter] = useState<AgentFilter>(() => parseAgentFilter(window.location.search));
   const sockRef = useRef<ChannelSocket | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
@@ -339,6 +398,11 @@ export function ChannelPage({
     const onPopState = () => setAgentFilter(parseAgentFilter(window.location.search));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setTeamNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -446,6 +510,16 @@ export function ChannelPage({
   const senderListId = `senders-${slug}`;
   const visibleMessages = useMemo(() => filterByAgent(state.messages, agentFilter), [agentFilter, state.messages]);
   const visibleSearchHits = useMemo(() => filterByAgent(searchHits, agentFilter), [agentFilter, searchHits]);
+  const teamSummaries = useMemo(
+    () =>
+      summarizeTeams({
+        presence: state.presence,
+        participants: state.participants,
+        messages: state.messages,
+        now: teamNow,
+      }),
+    [state.messages, state.participants, state.presence, teamNow],
+  );
   const agentFilterActive = agentFilter.agents.length > 0;
   const totalInView = q === "" ? state.messages.length : searchHits.length;
   const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
@@ -550,6 +624,7 @@ export function ChannelPage({
           onClear={clearAgentFilter}
         />
       )}
+      {q === "" && <TeamPanel teams={teamSummaries} />}
       {q === "" && <DecisionPanel messages={state.messages} />}
       {(state.messages.length > 0 || q !== "") && (
         <div className="chan-search-panel">

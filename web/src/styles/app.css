@@ -532,6 +532,120 @@
   border: 1.5px solid var(--d-ink);
 }
 
+.team-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 4px 4px;
+  border-top: 1px dashed var(--t-faint);
+}
+.team-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.team-title {
+  margin: 0;
+  font-size: 12px;
+  color: var(--t-muted);
+}
+.team-count {
+  font-size: 11px;
+  color: var(--t-dim);
+}
+.team-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.team-item {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid var(--t-faint);
+  border-radius: 8px;
+  background: var(--t-panel2);
+}
+.team-item-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.team-name {
+  min-width: 0;
+  font-family: var(--d-marker);
+  font-size: 14px;
+  color: var(--t-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-active {
+  flex: none;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--t-muted);
+}
+.team-residency {
+  flex: none;
+  padding: 1px 6px;
+  border: 1.5px solid var(--t-faint);
+  border-radius: 7px;
+  font-size: 10px;
+  color: var(--t-dim);
+  background: var(--t-panel);
+}
+.team-residency--webhook,
+.team-residency--supervised {
+  border-color: var(--d-green);
+  color: var(--d-green);
+  background: var(--d-green-soft);
+}
+.team-residency--mixed {
+  border-color: var(--d-yellow);
+  color: var(--t-muted);
+  background: #fff1ad;
+}
+.team-meta {
+  margin-top: 5px;
+  color: var(--t-dim);
+  font-size: 10.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.team-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.team-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1.5px solid var(--t-faint);
+  border-radius: 999px;
+  color: var(--t-dim);
+  background: var(--t-panel);
+  font-size: 10.5px;
+}
+.team-member.is-active {
+  border-color: var(--d-blue);
+  color: var(--d-blue);
+  background: var(--d-blue-soft);
+}
+.team-member span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .decision-panel {
   display: flex;
   flex-direction: column;
