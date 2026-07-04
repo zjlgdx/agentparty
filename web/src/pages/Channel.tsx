@@ -1,6 +1,6 @@
 // 频道页：presence 条 + 实时消息流 + 内联错误条幅 + 插话框。
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { SearchHit } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
@@ -10,6 +10,14 @@ import { PresenceBar } from "../components/PresenceBar";
 import { AuthError, ForbiddenError, fetchMessages, resetGuard, searchMessages } from "../lib/api";
 import { agentHue } from "../lib/agentColor";
 import { catchupKey, summarizeCatchup, type CatchupDigest } from "../lib/digest";
+import {
+  agentFilterSearch,
+  filterByAgent,
+  parseAgentFilter,
+  toggleAgent,
+  type AgentFilter,
+  type AgentFilterMode,
+} from "../lib/filters";
 import { fmtTime } from "../lib/time";
 import { ChannelSocket } from "../lib/ws";
 import { channelReducer, initialChannelState } from "../state";
@@ -60,6 +68,79 @@ function writeSeenSeq(key: string, seq: number) {
   } catch {
     // Storage can be unavailable in private contexts; the digest still renders for this session.
   }
+}
+
+function AgentFilterPanel({
+  senders,
+  filter,
+  visible,
+  total,
+  onMode,
+  onToggle,
+  onClear,
+}: {
+  senders: string[];
+  filter: AgentFilter;
+  visible: number;
+  total: number;
+  onMode: (mode: AgentFilterMode) => void;
+  onToggle: (agent: string) => void;
+  onClear: () => void;
+}) {
+  const active = filter.agents.length > 0;
+  return (
+    <section className="agent-filter-panel" aria-label="agent filters">
+      <div className="agent-filter-head">
+        <div className="agent-filter-modes" role="group" aria-label="agent filter mode">
+          <button
+            className={"d-btn agent-filter-mode" + (filter.mode === "only" ? " is-active" : "")}
+            type="button"
+            aria-pressed={filter.mode === "only"}
+            onClick={() => onMode("only")}
+          >
+            <span>Only</span>
+          </button>
+          <button
+            className={"d-btn agent-filter-mode" + (filter.mode === "except" ? " is-active" : "")}
+            type="button"
+            aria-pressed={filter.mode === "except"}
+            onClick={() => onMode("except")}
+          >
+            <span>Hide</span>
+          </button>
+        </div>
+        <span className="t-mono agent-filter-count">
+          {active ? `${visible}/${total}` : `${total}`}
+        </span>
+        {active && (
+          <button className="d-btn agent-filter-clear" type="button" onClick={onClear}>
+            <span>Clear</span>
+          </button>
+        )}
+      </div>
+      {senders.length > 0 && (
+        <div className="agent-filter-chips">
+          {senders.map((name) => {
+            const selected = filter.agents.includes(name);
+            return (
+              <button
+                key={name}
+                className={"agent-filter-chip t-mono" + (selected ? " is-active" : "")}
+                type="button"
+                aria-pressed={selected}
+                title={name}
+                style={{ "--ah": agentHue(name) } as CSSProperties}
+                onClick={() => onToggle(name)}
+              >
+                <span className="agent-filter-dot" aria-hidden="true" />
+                <span>{name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function CatchupPanel({
@@ -164,6 +245,7 @@ export function ChannelPage({
   const [guardResetError, setGuardResetError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [seenSeq, setSeenSeq] = useState<number | null>(null);
+  const [agentFilter, setAgentFilter] = useState<AgentFilter>(() => parseAgentFilter(window.location.search));
   const sockRef = useRef<ChannelSocket | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const pendingDraftsRef = useRef<string[]>([]);
@@ -213,6 +295,26 @@ export function ChannelPage({
       alive = false;
     };
   }, [state.archived, slug, token]);
+
+  useEffect(() => {
+    const onPopState = () => setAgentFilter(parseAgentFilter(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("agent");
+    url.searchParams.delete("agentMode");
+    const filterSearch = agentFilterSearch(agentFilter);
+    if (filterSearch !== "") {
+      const params = new URLSearchParams(filterSearch);
+      for (const [key, value] of params) url.searchParams.set(key, value);
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) window.history.replaceState(null, "", next);
+  }, [agentFilter]);
 
   // 新消息贴底滚动；用户上翻回看时不打扰
   const lastSeq = state.messages.length > 0 ? state.messages[state.messages.length - 1]!.seq : 0;
@@ -303,6 +405,23 @@ export function ChannelPage({
     ]),
   ].sort((a, b) => a.localeCompare(b));
   const senderListId = `senders-${slug}`;
+  const visibleMessages = useMemo(() => filterByAgent(state.messages, agentFilter), [agentFilter, state.messages]);
+  const visibleSearchHits = useMemo(() => filterByAgent(searchHits, agentFilter), [agentFilter, searchHits]);
+  const agentFilterActive = agentFilter.agents.length > 0;
+  const totalInView = q === "" ? state.messages.length : searchHits.length;
+  const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
+
+  const setAgentMode = useCallback((mode: AgentFilterMode) => {
+    setAgentFilter((current) => ({ ...current, mode }));
+  }, []);
+
+  const toggleAgentFilter = useCallback((agent: string) => {
+    setAgentFilter((current) => toggleAgent(current, agent));
+  }, []);
+
+  const clearAgentFilter = useCallback(() => {
+    setAgentFilter((current) => ({ ...current, agents: [] }));
+  }, []);
 
   useEffect(() => {
     if (q === "") {
@@ -381,6 +500,17 @@ export function ChannelPage({
           onCaughtUp={onCaughtUp}
         />
       )}
+      {knownSenders.length > 0 && (
+        <AgentFilterPanel
+          senders={knownSenders}
+          filter={agentFilter}
+          visible={visibleInView}
+          total={totalInView}
+          onMode={setAgentMode}
+          onToggle={toggleAgentFilter}
+          onClear={clearAgentFilter}
+        />
+      )}
       {(state.messages.length > 0 || q !== "") && (
         <div className="chan-search-panel">
           <div className="chan-search-row">
@@ -395,7 +525,11 @@ export function ChannelPage({
             />
             {q !== "" && (
               <span className="t-mono chan-search-count">
-                {searchLoading ? "searching" : `${searchHits.length} hits`}
+                {searchLoading
+                  ? "searching"
+                  : agentFilterActive
+                    ? `${visibleSearchHits.length}/${searchHits.length} hits`
+                    : `${searchHits.length} hits`}
               </span>
             )}
           </div>
@@ -442,16 +576,26 @@ export function ChannelPage({
       )}
       <div className="stream" ref={streamRef} onScroll={onScroll}>
         {q === ""
-          ? state.messages.map((m) => <MessageCard key={m.seq} msg={m} self={state.self} />)
-          : searchHits.map((hit) => <SearchHitCard key={hit.seq} hit={hit} />)}
+          ? visibleMessages.map((m) => <MessageCard key={m.seq} msg={m} self={state.self} />)
+          : visibleSearchHits.map((hit) => <SearchHitCard key={hit.seq} hit={hit} />)}
         {state.messages.length === 0 && q === "" && (
           <p className="d-empty" role="status" aria-live="polite">
             party watch {slug}
           </p>
         )}
+        {state.messages.length > 0 && q === "" && visibleMessages.length === 0 && (
+          <p className="d-empty" role="status" aria-live="polite">
+            no messages match selected agents
+          </p>
+        )}
         {q !== "" && !searchLoading && searchHits.length === 0 && searchInputError === null && searchError === null && (
           <p className="d-empty" role="status" aria-live="polite">
             没有匹配「{search.trim()}」的消息
+          </p>
+        )}
+        {q !== "" && !searchLoading && searchHits.length > 0 && visibleSearchHits.length === 0 && (
+          <p className="d-empty" role="status" aria-live="polite">
+            no search hits match selected agents
           </p>
         )}
       </div>

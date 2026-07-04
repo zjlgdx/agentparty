@@ -435,6 +435,85 @@
   white-space: nowrap;
 }
 
+/* sender filter：URL 可分享的 per-agent focus/hide 控制条 */
+.agent-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 4px 2px;
+}
+.agent-filter-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-filter-modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  background: var(--t-panel2);
+  border: 1.5px solid var(--d-ink);
+  border-radius: 8px;
+}
+.agent-filter-mode {
+  font-size: 11px;
+  padding: 3px 9px 4px;
+  background: transparent;
+  box-shadow: none;
+  border-width: 1.5px;
+}
+.agent-filter-mode.is-active {
+  background: var(--d-yellow);
+  box-shadow: 1.5px 2px 0 var(--d-shadow);
+}
+.agent-filter-count {
+  flex: none;
+  color: var(--t-dim);
+  font-size: 11px;
+}
+.agent-filter-clear {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  padding: 3px 9px 4px;
+}
+.agent-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: min(220px, 100%);
+  min-width: 0;
+  padding: 4px 8px;
+  color: var(--t-text);
+  background: var(--t-panel);
+  border: 1.5px solid var(--d-ink);
+  border-radius: 8px 6px 9px 7px / 7px 9px 6px 8px;
+  cursor: pointer;
+}
+.agent-filter-chip.is-active {
+  background: hsl(var(--ah, 220) 58% var(--agent-l-soft));
+  box-shadow: 2px 3px 0 var(--d-shadow);
+}
+.agent-filter-chip span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-filter-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: hsl(var(--ah, 220) 58% var(--agent-l-soft));
+  border: 1.5px solid var(--d-ink);
+}
+
 /* 频道搜索行：server-side retained-history search + sender/time filters */
 .chan-search-panel {
   display: flex;
@@ -706,6 +785,8 @@
   .catchup-head { align-items: stretch; flex-direction: column; }
   .catchup-action { align-self: flex-start; }
   .catchup-items li { grid-template-columns: 1fr; gap: 2px; }
+  .agent-filter-head { align-items: flex-start; flex-wrap: wrap; }
+  .agent-filter-clear { margin-left: 0; }
 }
 
 /* ---- 插话框 ---- */
