@@ -22,6 +22,11 @@ export interface WatchOptions {
   backoffBaseMs?: number;
 }
 
+export function resolveWatchTimeoutSec(timeout: number | undefined, follow: boolean): number {
+  if (typeof timeout === "number") return timeout;
+  return follow ? 0 : 240;
+}
+
 export async function runWatch(o: WatchOptions): Promise<number> {
   const out = o.out ?? ((line: string) => console.log(line));
   const conn = connect(o.server, o.token, o.channel, o.since, {
@@ -117,7 +122,7 @@ export async function run(argv: string[]): Promise<number> {
     token: cfg.token,
     channel,
     since: loadCursor(channel),
-    timeoutSec: timeout ?? 240,
+    timeoutSec: resolveWatchTimeoutSec(timeout, flags.follow === true),
     follow: flags.follow === true,
     mentionsOnly: flags["mentions-only"] === true,
     onCursor: (c) => saveCursor(channel, c),

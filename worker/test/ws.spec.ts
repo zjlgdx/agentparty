@@ -98,12 +98,24 @@ describe("websocket", () => {
 
     const worker = await WsClient.open(slug, agent.token);
     await worker.nextOfType("welcome");
-    worker.send({ type: "send", kind: "status", state: "working", note: "changing api signature" });
+    worker.send({
+      type: "send",
+      kind: "status",
+      state: "working",
+      note: "changing api signature",
+      mentions: [human.name],
+    });
     const sent = await worker.nextOfType("sent");
     expect(sent.seq).toBe(1);
 
     const msg = await watcher.nextOfType("msg");
-    expect(msg).toMatchObject({ seq: 1, kind: "status", state: "working", note: "changing api signature" });
+    expect(msg).toMatchObject({
+      seq: 1,
+      kind: "status",
+      state: "working",
+      note: "changing api signature",
+      mentions: [human.name],
+    });
     const presence = await watcher.nextOfType("presence");
     expect(presence).toMatchObject({ name: agent.name, state: "working", note: "changing api signature" });
 
@@ -113,6 +125,12 @@ describe("websocket", () => {
     expect(welcome.presence).toContainEqual(
       expect.objectContaining({ name: agent.name, state: "working" }),
     );
+    const history = await SELF.fetch(`http://local/api/channels/${slug}/messages`, {
+      headers: { authorization: `Bearer ${human.token}` },
+    });
+    expect((await history.json()) as unknown).toMatchObject({
+      messages: [expect.objectContaining({ kind: "status", mentions: [human.name] })],
+    });
     watcher.close();
     worker.close();
     rejoin.close();

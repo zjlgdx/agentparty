@@ -17,14 +17,16 @@ commands:
   agent     add <name> [--channel-scope slug]        mint an agent token as yourself (needs login)
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
-  watch     [channel|--channel C] [--timeout 240] [--mentions-only] [--follow]
+  watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow]
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
-  status    [channel|--channel C] working|waiting|blocked|done [-m note]
+  status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
   history   [channel|--channel C] [--since seq] [--limit n]
   channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug]
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|all] | remove <channel> --name n | list <channel>
   token     create --name n --role agent|human|readonly --owner label [--channel-scope slug] | revoke <name>   (ADMIN_SECRET env)
+
+watch defaults to a 240s timeout. With --follow, it stays attached unless --timeout N is explicit.
 
 exit codes: 0 ok/new message · 2 watch timeout (prints TIMEOUT) · 3 bad token · 4 loop guard · 5 archived`;
 

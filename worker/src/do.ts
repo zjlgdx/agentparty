@@ -71,21 +71,27 @@ function byteLength(s: string): number {
   return new TextEncoder().encode(s).byteLength;
 }
 
+function parseMentions(input: unknown): string[] | null {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) return null;
+  if (
+    input.length > MAX_MENTIONS ||
+    input.some((m) => typeof m !== "string" || !MENTION_NAME_RE.test(m)) ||
+    byteLength(JSON.stringify(input)) > MENTIONS_JSON_LIMIT
+  ) {
+    return null;
+  }
+  return input as string[];
+}
+
 // rest body 与 ws send 帧共用的校验（rest 侧无 type 字段）
 function parseSendFrame(input: unknown): SendFrame | null {
   if (typeof input !== "object" || input === null) return null;
   const f = input as Record<string, unknown>;
   if (f.kind === "message") {
     if (typeof f.body !== "string") return null;
-    if (f.mentions !== undefined && !Array.isArray(f.mentions)) return null;
-    const mentions = Array.isArray(f.mentions) ? f.mentions : [];
-    if (
-      mentions.length > MAX_MENTIONS ||
-      mentions.some((m) => typeof m !== "string" || !MENTION_NAME_RE.test(m)) ||
-      byteLength(JSON.stringify(mentions)) > MENTIONS_JSON_LIMIT
-    ) {
-      return null;
-    }
+    const mentions = parseMentions(f.mentions);
+    if (mentions === null) return null;
     const reply_to =
       f.reply_to === undefined || f.reply_to === null
         ? null
@@ -98,7 +104,9 @@ function parseSendFrame(input: unknown): SendFrame | null {
   if (f.kind === "status") {
     if (typeof f.state !== "string" || !STATUS_STATES.includes(f.state)) return null;
     const note = typeof f.note === "string" ? f.note : "";
-    return { type: "send", kind: "status", state: f.state as StatusState, note };
+    const mentions = parseMentions(f.mentions);
+    if (mentions === null) return null;
+    return { type: "send", kind: "status", state: f.state as StatusState, note, mentions };
   }
   return null;
 }
@@ -816,7 +824,7 @@ export class ChannelDO extends Server<Env> {
             sender,
             kind: "status",
             body: frame.note,
-            mentions: [],
+            mentions: frame.mentions ?? [],
             reply_to: null,
             state: frame.state,
             note: frame.note,

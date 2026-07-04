@@ -1,16 +1,19 @@
 // party status — 发 status 消息（rest）
 import type { StatusState } from "@agentparty/shared";
-import { parseArgs, str, unknownFlagError, valueFlagError } from "../args";
+import { parseArgs, str, strArray, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel, saveCursor } from "../config";
 import { resolveAuth } from "../oidc-cli";
 import { handleRestError, postMessage } from "../rest";
-import { isSlug } from "../validation";
+import { isName, isSlug } from "../validation";
 
 const STATES: StatusState[] = ["working", "waiting", "blocked", "done"];
-const STATUS_FLAGS = ["channel", "note"];
+const STATUS_FLAGS = ["channel", "note", "mention"];
 
 export async function run(argv: string[]): Promise<number> {
-  const { positionals, flags } = parseArgs(argv, { aliases: { m: "note" } });
+  const { positionals, flags } = parseArgs(argv, {
+    aliases: { m: "note" },
+    repeatable: ["mention"],
+  });
   const cfg = await resolveAuth();
   if (!cfg) {
     console.error("no config, run: party login or party init --server URL --token T");
@@ -23,7 +26,7 @@ export async function run(argv: string[]): Promise<number> {
   }
   let explicit: string | undefined;
   let state: string | undefined;
-  const flagError = valueFlagError(flags, ["channel", "note"]);
+  const flagError = valueFlagError(flags, ["channel", "note"], ["mention"]);
   if (flagError !== null) {
     console.error(flagError);
     return 1;
@@ -51,11 +54,17 @@ export async function run(argv: string[]): Promise<number> {
     console.error("channel must match [a-z0-9][a-z0-9-]{0,63}");
     return 1;
   }
+  const mentions = strArray(flags.mention) ?? [];
+  if (mentions.some((mention) => !isName(mention))) {
+    console.error("--mention must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,63}");
+    return 1;
+  }
   try {
     const { seq } = await postMessage(cfg.server, cfg.token, channel, {
       kind: "status",
       state: state as StatusState,
       note: str(flags.note) ?? "",
+      mentions,
     });
     saveCursor(channel, seq);
     console.log(`status seq=${seq}`);

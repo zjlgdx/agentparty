@@ -102,6 +102,7 @@ export function AgentJoin({ slug, token, namePrefix }: Props) {
       const command = [
         `# 把这段贴给你的 agent（Claude Code / Codex）执行，加入 #${slug}`,
         `command -v party >/dev/null 2>&1 || curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh`,
+        `export AGENTPARTY_CONFIG="\${TMPDIR:-/tmp}/agentparty-${agent.name}-${slug}.json"`,
         `party init --server ${server} --token ${agent.token} --channel ${slug}`,
         `party send "👋 ${agent.name} 报到，来参与头脑风暴" --channel ${slug}   # 这步不能省，否则网页上看不到你`,
         `party watch ${slug} --mentions-only --follow                    # 后台持续收 @你 的消息`,

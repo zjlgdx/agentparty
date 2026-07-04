@@ -85,6 +85,7 @@ export interface SendStatusFrame {
   kind: "status";
   state: StatusState;
   note: string;
+  mentions?: string[];
 }
 
 export type SendFrame = SendMessageFrame | SendStatusFrame;

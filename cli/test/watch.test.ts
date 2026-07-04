@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_TIMEOUT } from "@agentparty/shared";
-import { runWatch, type WatchOptions } from "../src/commands/watch";
+import { resolveWatchTimeoutSec, runWatch, type WatchOptions } from "../src/commands/watch";
 import { msgFrame, startMockServer, welcomeFrame, type MockServer } from "./mock-server";
 
 let server: MockServer | null = null;
@@ -27,6 +27,12 @@ function opts(over: Partial<WatchOptions> & { server: string }): WatchOptions & 
 }
 
 describe("runWatch", () => {
+  test("follow mode has no idle timeout unless --timeout is explicit", () => {
+    expect(resolveWatchTimeoutSec(undefined, false)).toBe(240);
+    expect(resolveWatchTimeoutSec(undefined, true)).toBe(0);
+    expect(resolveWatchTimeoutSec(30, true)).toBe(30);
+  });
+
   test("prints backfilled messages and exits 0 once drained", async () => {
     server = startMockServer((frame, sock) => {
       if (frame.type === "hello") {

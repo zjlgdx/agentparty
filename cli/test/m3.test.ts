@@ -554,10 +554,24 @@ describe("party status/history channel flag", () => {
     mock = startRestMock();
     writeCfg(mock.url);
     writeWorkspaceState("dev");
-    const r = await runCli(["status", "--channel", "ops", "working", "-m", "checking"]);
+    const r = await runCli([
+      "status",
+      "--channel",
+      "ops",
+      "working",
+      "-m",
+      "checking",
+      "--mention",
+      "dispatcher",
+    ]);
     expect(r.code).toBe(0);
     const req = reqsOf(mock, "POST", "/api/channels/ops/messages")[0]!;
-    expect(req.body).toMatchObject({ kind: "status", state: "working", note: "checking" });
+    expect(req.body).toMatchObject({
+      kind: "status",
+      state: "working",
+      note: "checking",
+      mentions: ["dispatcher"],
+    });
   });
 
   test("status -m 后接 flag 退出 1 且不发请求", async () => {

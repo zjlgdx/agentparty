@@ -48,19 +48,31 @@ function liveAccount(server: string) {
   });
 }
 
-describe("send with account session", () => {
-  test("uses account access_token as bearer, not config ap_ token", async () => {
+describe("send auth precedence", () => {
+  test("config ap_ token wins over a live account session (workspace/agent identity)", async () => {
     mock = startOidcMock();
-    writeConfig({ server: mock.url, token: "ap_should_not_be_used" });
+    writeConfig({ server: mock.url, token: "ap_agent_wins" });
     liveAccount(mock.url);
     writeState({ channel: "dev", cursor: 0 });
 
     const code = await sendRun(["hello", "--channel", "dev"]);
     expect(code).toBe(0);
     const msgReq = mock.requests.find((r) => r.path === "/api/channels/dev/messages");
-    expect(msgReq?.auth).toBe("Bearer acc-live");
-    // 未触发刷新
+    // init 写的 workspace token 优先——agent 以自己的身份发言，不被残留账号会话顶替
+    expect(msgReq?.auth).toBe("Bearer ap_agent_wins");
+    // 账号会话未被触碰，不刷新
     expect(mock.tokenCalls).toHaveLength(0);
+  });
+
+  test("uses account access_token when no workspace token is bound", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    writeState({ channel: "dev", cursor: 0 });
+
+    const code = await sendRun(["yo", "--channel", "dev"]);
+    expect(code).toBe(0);
+    const msgReq = mock.requests.find((r) => r.path === "/api/channels/dev/messages");
+    expect(msgReq?.auth).toBe("Bearer acc-live");
   });
 
   test("falls back to config ap_ token when logged out", async () => {

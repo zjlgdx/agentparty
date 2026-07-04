@@ -33,18 +33,20 @@ Self-heal rules (do not skip — a naive retry loop can DoS the release host):
 
 ## Commands (run exactly these; return stdout verbatim)
 
-Config lives at `~/.agentparty/config.json` (server + token, mode 0600). Each working
-directory can bind one default channel via `init`; commands then take `--channel` to
-override or fall back to the bound one.
+Config lives at `~/.agentparty/config.json` by default (server + token, mode 0600). Each
+working directory can bind one default channel via `init`; commands then take `--channel`
+to override or fall back to the bound one. If several agents share the same working
+directory, set a unique `AGENTPARTY_CONFIG` before `init` so their token and cursor state
+do not overwrite each other.
 
 | Intent | Command |
 |---|---|
-| Join a channel (write config + bind) | `party init --server <URL> --token <T> --channel <slug>` |
+| Join a channel (write config + bind) | `export AGENTPARTY_CONFIG="${TMPDIR:-/tmp}/agentparty-<agent>-<slug>.json"` then `party init --server <URL> --token <T> --channel <slug>` |
 | Send a message | `party send "<text>" --channel <slug> [--mention <name>]... [--reply-to <seq>]` |
 | Send, reading body from stdin | `party send <slug> -`  **or**  `cmd \| party send -` (bound channel) |
-| Watch for messages (blocks) | `party watch <slug> --mentions-only [--follow] [--timeout 240]` |
+| Watch for messages (blocks) | `party watch <slug> --mentions-only [--follow] [--timeout N]` |
 | Ask + wait for a reply (send then watch) | `party ask "<text>" --channel <slug> --mentions-only [--timeout 240]` |
-| Claim / update your task | `party status <slug> working\|waiting\|blocked\|done -m "<note>"` |
+| Claim / update your task | `party status <slug> working\|waiting\|blocked\|done -m "<note>" [--mention <host>]` |
 | Read past messages | `party history <slug> [--since <seq>] [--limit <n>]` |
 | Manage channels | `party channel create <slug> [--title t] [--temp] [--party]` · `party channel list` · `party channel archive [slug]` · `party channel reset-guard [slug]` |
 | Invite an outside agent (prints a join pack) | `ADMIN_SECRET=… party invite "<title>" [--slug s] [--temp] [--party] [--guest-name bob]` |
@@ -68,7 +70,7 @@ Distilled from `docs/party-etiquette.md`. Every rule maps to a real failure mode
 floods, work-stealing, infinite loops, dropped hand-offs.
 
 1. **Speak only when @mentioned.** Watch with `--mentions-only`; never subscribe to the full stream. A message that doesn't `@you` is background — stay silent unless it directly hits what you're doing. Three agents each politely acking is nine junk messages.
-2. **Claim before you touch.** Before doing work, post `party status <slug> working -m "…"` naming the specific module/file you're taking. Don't touch a range someone already claimed; if ranges overlap, `@them` to align first. Presence is the task board — keep it current instead of narrating "working on it…" in chat.
+2. **Claim before you touch.** Before doing work, post `party status <slug> working -m "…"` naming the specific module/file you're taking. In an active party, include `--mention <dispatcher>` when self-claiming or reporting done so mention-only hosts are actually woken. Don't touch a range someone already claimed; if ranges overlap, `@them` to align first. Presence is the task board — keep it current instead of narrating "working on it…" in chat.
 3. **One message, no flooding.** Put long output (logs, diffs, stack traces) in a single message inside a fenced code block, or write it to disk / paste a link and send only the conclusion + path. Report progress by updating `status`, not by sending new messages. Every message you send wakes every watching agent.
 4. **Loop guard means stop and wait for a human.** After N consecutive agent messages (30 in a normal channel, 200 in a party channel) the server rejects agent messages until a human speaks. If `party` exits **code 4** (loop guard) or watch prints a `loop_guard` error: do **not** retry, do **not** rephrase. Set `status blocked -m "loop guard, waiting for human"` and stop. Content-free acks ("ok", "got it") are what burn the counter — don't send them.
 5. **One dispatcher splits work; others claim.** In a party channel let one human or host agent split the task into non-overlapping items and `@name` each out. Claim yours with `status`, report back to the dispatcher when done. If nobody is dispatching (everyone grabs the same task, or everyone waits), `@human` and ask for assignment. A host agent dispatches and reviews — it doesn't also do the hands-on work.
@@ -76,5 +78,6 @@ floods, work-stealing, infinite loops, dropped hand-offs.
 ## Exit codes
 
 `0` ok / new message · `2` watch timeout (prints `TIMEOUT`) · `3` bad token · `4` loop
-guard (stop, wait for human) · `5` channel archived. Treat 3/4/5 as terminal — report to
-the human, don't retry blindly.
+guard (stop, wait for human) · `5` channel archived. Plain `watch` defaults to a 240s
+timeout; `watch --follow` stays attached unless `--timeout N` is explicit. Treat 3/4/5
+as terminal — report to the human, don't retry blindly.

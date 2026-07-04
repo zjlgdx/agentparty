@@ -25,6 +25,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.AGENTPARTY_HOME;
+  delete process.env.AGENTPARTY_CONFIG;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -48,6 +49,30 @@ describe("config", () => {
     expect(readConfig(b)).toEqual({ server: "s", token: "ap_b" });
     // 无 workspace 配置的目录回退到全局（= 最近一次 init 的 ap_b），保「init 一次跨目录可用」
     expect(readConfig("/tmp/proj-c")).toEqual({ server: "s", token: "ap_b" });
+  });
+
+  test("AGENTPARTY_CONFIG pins config and cursor state for same-cwd agents", () => {
+    const cwd = "/tmp/shared-worktree";
+    const configA = join(home, "agent-a.json");
+    const configB = join(home, "agent-b.json");
+
+    process.env.AGENTPARTY_CONFIG = configA;
+    writeConfig({ server: "s", token: "ap_a" }, cwd);
+    writeState({ channel: "agentparty", cursor: 10 }, cwd);
+    expect(readConfig(cwd)).toEqual({ server: "s", token: "ap_a" });
+    expect(statePath(cwd)).toBe(join(home, "agent-a.json.state", "state.json"));
+    expect(readState(cwd)).toEqual({ channel: "agentparty", cursor: 10 });
+
+    process.env.AGENTPARTY_CONFIG = configB;
+    writeConfig({ server: "s", token: "ap_b" }, cwd);
+    writeState({ channel: "agentparty", cursor: 3 }, cwd);
+    expect(readConfig(cwd)).toEqual({ server: "s", token: "ap_b" });
+    expect(statePath(cwd)).toBe(join(home, "agent-b.json.state", "state.json"));
+    expect(readState(cwd)).toEqual({ channel: "agentparty", cursor: 3 });
+
+    process.env.AGENTPARTY_CONFIG = configA;
+    expect(readConfig(cwd)).toEqual({ server: "s", token: "ap_a" });
+    expect(readState(cwd)).toEqual({ channel: "agentparty", cursor: 10 });
   });
 });
 

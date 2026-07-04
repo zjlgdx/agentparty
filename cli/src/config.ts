@@ -1,6 +1,6 @@
 // 全局配置与 workspace 游标状态
 import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -18,15 +18,24 @@ export function agentpartyHome(): string {
   return process.env.AGENTPARTY_HOME || join(homedir(), ".agentparty");
 }
 
+export function explicitConfigPath(): string | null {
+  return process.env.AGENTPARTY_CONFIG || null;
+}
+
 // 全局 config：跨目录默认 + 存量兼容（旧版本只写这里）。
 export function globalConfigPath(): string {
+  const explicit = explicitConfigPath();
+  if (explicit) return explicit;
   return join(agentpartyHome(), "config.json");
 }
 
 // workspace 级 config：按 cwd 隔离，与 state 同放（state/<workspaceId>/）。
 // 同机多 session 各在自己目录，token/身份互不覆盖——修「共享 config.json 被后启动的 session 冲掉」。
-// 注：同一目录并发多 session 仍会撞（workspaceId 相同），那种情形用 AGENTPARTY_HOME 硬隔离。
+// 注：同一目录并发多 session 仍会撞（workspaceId 相同），那种情形用 AGENTPARTY_CONFIG
+// 或 AGENTPARTY_HOME 硬隔离；AGENTPARTY_CONFIG 同时隔离 config 与 cursor state。
 export function workspaceConfigPath(cwd: string = process.cwd()): string {
+  const explicit = explicitConfigPath();
+  if (explicit) return explicit;
   return join(agentpartyHome(), "state", workspaceId(cwd), "config.json");
 }
 
@@ -37,6 +46,14 @@ export function configPath(cwd: string = process.cwd()): string {
 }
 
 export function readConfig(cwd: string = process.cwd()): Config | null {
+  const explicit = explicitConfigPath();
+  if (explicit) {
+    try {
+      return JSON.parse(readFileSync(explicit, "utf8")) as Config;
+    } catch {
+      return null;
+    }
+  }
   // workspace 级优先（隔离），无则回退全局（跨目录默认 / 存量）
   for (const p of [workspaceConfigPath(cwd), globalConfigPath()]) {
     try {
@@ -50,6 +67,13 @@ export function readConfig(cwd: string = process.cwd()): Config | null {
 
 export function writeConfig(cfg: Config, cwd: string = process.cwd()): void {
   const body = JSON.stringify(cfg, null, 2) + "\n";
+  const explicit = explicitConfigPath();
+  if (explicit) {
+    mkdirSync(dirname(explicit), { recursive: true });
+    writeFileSync(explicit, body, { mode: 0o600 });
+    chmodSync(explicit, 0o600);
+    return;
+  }
   // 配置里有 token 明文，收紧到仅属主可读写；对已存在的文件补 chmod
   // 双写：① workspace 级（本目录/session 专属，读取时优先）② 全局（跨目录默认 + 存量兼容）。
   // 读取偏好 workspace，故全局被并发覆盖也不会串号。
@@ -75,6 +99,8 @@ export function workspaceId(cwd: string = process.cwd()): string {
 }
 
 export function statePath(cwd: string = process.cwd()): string {
+  const explicit = explicitConfigPath();
+  if (explicit) return join(dirname(explicit), `${basename(explicit)}.state`, "state.json");
   return join(agentpartyHome(), "state", workspaceId(cwd), "state.json");
 }
 

@@ -150,9 +150,11 @@ channel:  ${slug}  ${channelDesc}
 把下面三步整段发给对方（agent 在终端里跑）：
 
   1. 确保已安装 party cli
-  2. 接入频道（token 只出现这一次，注意保管）：
+  2. 隔离本 agent 的本地配置（同一目录多 agent 不串号）：
+     export AGENTPARTY_CONFIG="\${TMPDIR:-/tmp}/agentparty-${guestName}-${slug}.json"
+  3. 接入频道（token 只出现这一次，注意保管）：
      party init --server ${server} --token ${guest.token} --channel ${slug}
-  3. 开始收发：
+  4. 开始收发：
      party watch ${slug} --follow
 
 ${webLines}
