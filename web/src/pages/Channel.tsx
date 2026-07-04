@@ -9,6 +9,7 @@ import { MessageCard } from "../components/MessageCard";
 import { PresenceBar } from "../components/PresenceBar";
 import { AuthError, ForbiddenError, fetchMessages, resetGuard, searchMessages } from "../lib/api";
 import { agentHue } from "../lib/agentColor";
+import { catchupKey, summarizeCatchup, type CatchupDigest } from "../lib/digest";
 import { fmtTime } from "../lib/time";
 import { ChannelSocket } from "../lib/ws";
 import { channelReducer, initialChannelState } from "../state";
@@ -40,6 +41,83 @@ function nonNegativeInt(value: string): number | null {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) return null;
   return n;
+}
+
+function readSeenSeq(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSeenSeq(key: string, seq: number) {
+  try {
+    localStorage.setItem(key, String(seq));
+  } catch {
+    // Storage can be unavailable in private contexts; the digest still renders for this session.
+  }
+}
+
+function CatchupPanel({
+  digest,
+  seenSeq,
+  latestSeq,
+  onCaughtUp,
+}: {
+  digest: CatchupDigest;
+  seenSeq: number;
+  latestSeq: number;
+  onCaughtUp: () => void;
+}) {
+  const chips = [
+    `${digest.messages} new`,
+    digest.mentions > 0 ? `${digest.mentions} @you` : null,
+    digest.respondedMentions > 0 ? `${digest.respondedMentions} handled` : null,
+    digest.blocked > 0 ? `${digest.blocked} blocked` : null,
+    digest.done > 0 ? `${digest.done} done` : null,
+    digest.releases > 0 ? `${digest.releases} release` : null,
+    digest.questions > 0 ? `${digest.questions} question` : null,
+    digest.replies > 0 ? `${digest.replies} replies` : null,
+  ].filter((chip): chip is string => chip !== null);
+
+  return (
+    <section className="catchup-panel" aria-label="while you were away">
+      <div className="catchup-head">
+        <div>
+          <h2 className="catchup-title">While you were away</h2>
+          <p className="catchup-range t-mono">
+            #{seenSeq + 1}..#{latestSeq}
+          </p>
+        </div>
+        <button className="d-btn catchup-action" type="button" onClick={onCaughtUp}>
+          <span>Caught up</span>
+        </button>
+      </div>
+      <div className="catchup-chips t-mono">
+        {chips.map((chip) => (
+          <span key={chip} className="catchup-chip">
+            {chip}
+          </span>
+        ))}
+      </div>
+      {digest.items.length > 0 && (
+        <ol className="catchup-items">
+          {digest.items.map((item) => (
+            <li key={item.seq}>
+              <span className="t-mono catchup-item-meta">
+                #{item.seq} {item.label}
+              </span>
+              <span>{item.text}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
 }
 
 function SearchHitCard({ hit }: { hit: SearchHit }) {
@@ -85,6 +163,7 @@ export function ChannelPage({
   const [guardResetting, setGuardResetting] = useState(false);
   const [guardResetError, setGuardResetError] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [seenSeq, setSeenSeq] = useState<number | null>(null);
   const sockRef = useRef<ChannelSocket | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const pendingDraftsRef = useRef<string[]>([]);
@@ -137,10 +216,23 @@ export function ChannelPage({
 
   // 新消息贴底滚动；用户上翻回看时不打扰
   const lastSeq = state.messages.length > 0 ? state.messages[state.messages.length - 1]!.seq : 0;
+  const seenKey = state.self === null ? null : catchupKey(slug, state.self);
   useEffect(() => {
     const el = streamRef.current;
     if (el !== null && stickBottom.current) el.scrollTop = el.scrollHeight;
   }, [lastSeq]);
+
+  useEffect(() => {
+    if (seenKey === null) return;
+    const stored = readSeenSeq(seenKey);
+    if (stored === null) {
+      if (lastSeq <= 0) return;
+      writeSeenSeq(seenKey, lastSeq);
+      setSeenSeq(lastSeq);
+      return;
+    }
+    setSeenSeq(stored);
+  }, [lastSeq, seenKey]);
 
   const onScroll = useCallback(() => {
     const el = streamRef.current;
@@ -168,6 +260,10 @@ export function ChannelPage({
   }, [draft]);
 
   const canWrite = state.self !== null && !state.archived && !state.readonly;
+  const catchupDigest =
+    state.self !== null && seenSeq !== null && lastSeq > seenSeq
+      ? summarizeCatchup(state.messages, state.self, seenSeq)
+      : null;
 
   const onResetGuard = useCallback(() => {
     if (guardResetting) return;
@@ -185,6 +281,11 @@ export function ChannelPage({
       })
       .finally(() => setGuardResetting(false));
   }, [guardResetting, slug, token]);
+
+  const onCaughtUp = useCallback(() => {
+    if (seenKey !== null) writeSeenSeq(seenKey, lastSeq);
+    setSeenSeq(lastSeq);
+  }, [lastSeq, seenKey]);
 
   const q = search.trim();
   const from = searchFrom.trim();
@@ -271,6 +372,14 @@ export function ChannelPage({
         <div className="chan-toolbar">
           <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} />
         </div>
+      )}
+      {catchupDigest !== null && catchupDigest.messages > 0 && seenSeq !== null && (
+        <CatchupPanel
+          digest={catchupDigest}
+          seenSeq={seenSeq}
+          latestSeq={lastSeq}
+          onCaughtUp={onCaughtUp}
+        />
       )}
       {(state.messages.length > 0 || q !== "") && (
         <div className="chan-search-panel">
