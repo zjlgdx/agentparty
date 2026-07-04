@@ -227,7 +227,8 @@
   white-space: nowrap;
 }
 .presence-role,
-.presence-residency {
+.presence-residency,
+.presence-wake {
   flex: none;
   padding: 1px 5px;
   border: 1px solid var(--d-ink);
@@ -242,6 +243,21 @@
 .presence-role--active {
   background: var(--d-green);
   color: #fff;
+}
+.presence-wake--off {
+  border-color: var(--t-faint);
+  color: var(--t-dim);
+  background: var(--t-panel2);
+}
+.presence-wake--pending {
+  border-color: var(--d-yellow);
+  color: var(--t-muted);
+  background: #fff1ad;
+}
+.presence-wake--on {
+  border-color: var(--d-green);
+  color: var(--d-green);
+  background: var(--d-green-soft);
 }
 .presence-ts { font-size: 10px; font-weight: 400; color: var(--t-dim); }
 .presence-empty { font-size: 12px; color: var(--t-dim); }

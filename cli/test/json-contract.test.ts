@@ -80,7 +80,8 @@ function expectContractShape(expected: unknown): unknown {
   }
   if (typeof expected === "string") {
     return expected.startsWith("agentparty.") || expected === "msg" || expected === "status" ||
-        expected === "timeout" || expected === "error" || expected === "whoami" || expected === "digest"
+        expected === "timeout" || expected === "error" || expected === "whoami" ||
+        expected === "digest" || expected === "wake_test"
       ? expected
       : expect.any(String);
   }
@@ -217,6 +218,40 @@ describe("json contract fixtures", () => {
     const result = await runCli(["digest", "dev", "--since", "10", "--json"]);
     expect(result).toMatchObject({ code: 0, stderr: "" });
     expectContract(parseOneLine(result.stdout), fixture("digest.json"));
+  });
+
+  test("wake test --json output matches the agentparty.v1 fixture shape", async () => {
+    restMock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: null,
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "agent",
+                  state: "waiting",
+                  note: null,
+                  ts: Date.now(),
+                  last_seen: Date.now(),
+                  residency: "human_driven",
+                  wake: { kind: "none" },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    writeCfg(restMock.url);
+
+    const result = await runCli(["wake", "test", "@agent", "dev", "--json"]);
+    expect(result).toMatchObject({ code: 2, stderr: "" });
+    expectContract(parseOneLine(result.stdout), fixture("wake-test.json"));
   });
 
   test("watch --json timeout frames match the agentparty.v1 fixture shape", async () => {

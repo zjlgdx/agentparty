@@ -6,6 +6,7 @@ import {
   type ChannelKind,
   type ChannelMode,
   type MsgFrame,
+  type PresenceEntry,
   type SendMessageFrame,
   type SendStatusFrame,
   type TokenRole,
@@ -35,6 +36,7 @@ export interface ChannelInfo {
   mode?: ChannelMode;
   visibility?: ChannelVisibility;
   archived_at: number | null;
+  presence?: PresenceEntry[];
 }
 
 export interface WebhookInfo {

@@ -1,0 +1,34 @@
+{
+  "schema": "agentparty.v1",
+  "type": "wake_test",
+  "channel": "dev",
+  "target": "agent",
+  "result": "not_auto_wakeable",
+  "generated_at": 1751620000000,
+  "timeout_sec": 30,
+  "presence": {
+    "state": "waiting",
+    "residency": "human_driven",
+    "wake_kind": "none",
+    "wake_verified_at": null,
+    "last_seen": 1751620000000
+  },
+  "phases": {
+    "mention_delivered": {
+      "ok": false,
+      "seq": null,
+      "evidence": "not sent because target is not auto-wakeable"
+    },
+    "wake_invoked": {
+      "ok": false,
+      "adapter": "none",
+      "evidence": "target is human-driven; mention is inbox only"
+    },
+    "agent_resumed": {
+      "ok": false,
+      "seq": null,
+      "evidence": null
+    }
+  },
+  "reason": "target is human-driven; mention is inbox only"
+}

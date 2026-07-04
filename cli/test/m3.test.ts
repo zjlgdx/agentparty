@@ -884,6 +884,177 @@ describe("party status/history channel flag", () => {
     const frame = JSON.parse(r.stdout.trim());
     expect(frame.since).toBe(42);
   });
+
+  test("wake test reports human-driven wake=none as inbox-only and does not send", async () => {
+    mock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: null,
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "agent",
+                  state: "waiting",
+                  note: null,
+                  ts: 111,
+                  last_seen: 111,
+                  residency: "human_driven",
+                  wake: { kind: "none" },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["wake", "test", "@agent", "dev", "--json"]);
+    expect(r.code).toBe(2);
+    const frame = JSON.parse(r.stdout.trim());
+    expect(frame).toMatchObject({
+      schema: "agentparty.v1",
+      type: "wake_test",
+      channel: "dev",
+      target: "agent",
+      result: "not_auto_wakeable",
+      presence: { residency: "human_driven", wake_kind: "none" },
+      phases: {
+        mention_delivered: { ok: false, seq: null },
+        wake_invoked: { ok: false, adapter: "none" },
+        agent_resumed: { ok: false, seq: null },
+      },
+    });
+    expect(reqsOf(mock, "POST", "/api/channels/dev/messages")).toHaveLength(0);
+  });
+
+  test("wake test sends to advertised wake adapter and accepts linked status summary as resume", async () => {
+    mock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: null,
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "agent",
+                  state: "waiting",
+                  note: null,
+                  ts: 111,
+                  last_seen: 111,
+                  residency: "supervised",
+                  wake: { kind: "serve", verified_at: 100 },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      if (req.method === "POST" && req.path === "/api/channels/dev/messages") {
+        return Response.json({ seq: 10 });
+      }
+      if (req.method === "GET" && req.path === "/api/channels/dev/messages") {
+        return Response.json({
+          messages: [
+            {
+              type: "status",
+              seq: 11,
+              sender: { name: "agent", kind: "agent" },
+              kind: "status",
+              body: "ack",
+              mentions: [],
+              reply_to: null,
+              state: "done",
+              note: "ack",
+              status: {
+                owner: "agent",
+                state: "done",
+                scope: [],
+                summary_seq: 10,
+                blocked_reason: null,
+                updated_at: 112,
+              },
+              ts: 112,
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["wake", "test", "@agent", "dev", "--timeout", "1", "--json"]);
+    expect(r.code).toBe(0);
+    const frame = JSON.parse(r.stdout.trim());
+    expect(frame).toMatchObject({
+      type: "wake_test",
+      result: "healthy",
+      phases: {
+        mention_delivered: { ok: true, seq: 10 },
+        wake_invoked: { ok: null, adapter: "serve" },
+        agent_resumed: { ok: true, seq: 11, evidence: "status.summary_seq" },
+      },
+    });
+    expect(reqsOf(mock, "POST", "/api/channels/dev/messages")[0]!.body).toMatchObject({
+      kind: "message",
+      mentions: ["agent"],
+      reply_to: null,
+    });
+  });
+
+  test("wake test timeout keeps mention delivery separate from resume", async () => {
+    mock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: null,
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "agent",
+                  state: "waiting",
+                  note: null,
+                  ts: 111,
+                  last_seen: 111,
+                  residency: "webhook",
+                  wake: { kind: "webhook", verified_at: 100 },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      if (req.method === "POST" && req.path === "/api/channels/dev/messages") {
+        return Response.json({ seq: 20 });
+      }
+      if (req.method === "GET" && req.path === "/api/channels/dev/messages") {
+        return Response.json({ messages: [] });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["wake", "test", "@agent", "dev", "--timeout", "1", "--json"]);
+    expect(r.code).toBe(2);
+    const frame = JSON.parse(r.stdout.trim());
+    expect(frame).toMatchObject({
+      type: "wake_test",
+      result: "timeout",
+      phases: {
+        mention_delivered: { ok: true, seq: 20 },
+        wake_invoked: { ok: null, adapter: "webhook" },
+        agent_resumed: { ok: false, seq: null },
+      },
+    });
+  });
 });
 
 describe("rest error mapping", () => {

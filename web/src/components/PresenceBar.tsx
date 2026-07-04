@@ -23,6 +23,7 @@ interface Item {
   role: NonNullable<PresenceEntry["role"]> | null;
   residency: NonNullable<PresenceEntry["residency"]> | null;
   wakeKind: NonNullable<PresenceEntry["wake"]>["kind"] | null;
+  wakeVerifiedAt: number | null;
   owner: string | null; // 所属人：agent 的操作者 / 人类的 email，仅连接中的参与者可知
 }
 
@@ -50,6 +51,15 @@ function residencyBadge(item: Item): string | null {
   return item.residency;
 }
 
+function wakeabilityBadge(item: Item): { text: string; tone: "off" | "pending" | "on" } | null {
+  if (item.residency === "human_driven" || item.residency === "bare" || item.wakeKind === "none") {
+    return { text: "not wakeable", tone: "off" };
+  }
+  if (item.wakeKind === null) return null;
+  if (item.wakeVerifiedAt !== null) return { text: "wakeable", tone: "on" };
+  return { text: "wake unverified", tone: "pending" };
+}
+
 export function PresenceBar({ presence, participants, status, party = false, isPublic = false }: Props) {
   // 相对时间 30s 刷一次
   const [, setTick] = useState(0);
@@ -71,6 +81,7 @@ export function PresenceBar({ presence, participants, status, party = false, isP
       role: entry?.role ?? null,
       residency: entry?.residency ?? null,
       wakeKind: entry?.wake?.kind ?? null,
+      wakeVerifiedAt: entry?.wake?.verified_at ?? null,
     };
     if (!connected) {
       return { name, state: "offline", note: null, ts: entry?.ts ?? null, owner: null, ...meta };
@@ -88,12 +99,14 @@ export function PresenceBar({ presence, participants, status, party = false, isP
       {items.map((it) => {
         const badge = roleBadge(it, now);
         const residency = residencyBadge(it);
+        const wakeability = wakeabilityBadge(it);
         const activeHost = hasActiveHostLease(it, now);
         const titleParts = [
           it.owner !== null && it.owner !== it.name ? `${it.name} · ${it.owner}` : it.name,
           it.role !== null ? `role: ${it.role}` : null,
           it.residency !== null ? `residency: ${it.residency}` : null,
           it.wakeKind !== null ? `wake: ${it.wakeKind}` : null,
+          it.wakeVerifiedAt !== null ? `wake verified: ${fmtRel(it.wakeVerifiedAt)}` : null,
           it.lastSeen !== null ? `last seen: ${fmtRel(it.lastSeen)}` : null,
         ].filter((part): part is string => part !== null);
         return (
@@ -117,6 +130,11 @@ export function PresenceBar({ presence, participants, status, party = false, isP
               </span>
             )}
             {residency !== null && <span className="t-mono presence-residency">{residency}</span>}
+            {wakeability !== null && (
+              <span className={`t-mono presence-wake presence-wake--${wakeability.tone}`}>
+                {wakeability.text}
+              </span>
+            )}
             {it.note !== null && it.note !== "" && <span className="t-mono presence-note">{it.note}</span>}
             {it.ts !== null && <span className="t-mono presence-ts">{fmtRel(it.ts)}</span>}
           </span>

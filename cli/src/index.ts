@@ -23,6 +23,7 @@ commands:
   status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
   history   [channel|--channel C] [--since seq] [--limit n] [--json]
   digest    [channel|--channel C] [--since seq|last-seen] [--json]
+  wake      test @agent [channel|--channel C] [--timeout N] [--json]
   channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug]
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|all] | remove <channel> --name n | list <channel>
@@ -67,6 +68,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/history")).run(rest);
     case "digest":
       return (await import("./commands/digest")).run(rest);
+    case "wake":
+      return (await import("./commands/wake")).run(rest);
     case "channel":
       return (await import("./commands/channel")).run(rest);
     case "invite":
