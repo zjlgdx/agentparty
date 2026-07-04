@@ -14,6 +14,7 @@ export interface ChannelState {
   archived: boolean; // 灰条 "channel archived"
   forbidden: boolean; // 私有频道 ACL 拒入（spec §3）→ 友好红条，停止重连
   loopGuard: string | null; // 黄条，人类发言可重置
+  loopGuardBaselineSeq: number | null; // welcome/error 时的游标；历史回放中的旧 human 消息不能清黄条
   sendError: string | null; // rate_limited / too_large 红条
   lastSentSeq: number; // sent 确认，composer 据此清空草稿
 }
@@ -29,6 +30,7 @@ export const initialChannelState: ChannelState = {
   archived: false,
   forbidden: false,
   loopGuard: null,
+  loopGuardBaselineSeq: null,
   sendError: null,
   lastSentSeq: 0,
 };
@@ -45,7 +47,7 @@ export function channelReducer(state: ChannelState, action: ChannelAction): Chan
     case "status":
       return { ...state, status: action.status };
     case "guard_reset":
-      return { ...state, loopGuard: null, sendError: null };
+      return { ...state, loopGuard: null, loopGuardBaselineSeq: null, sendError: null };
     case "send_failed":
       return { ...state, sendError: action.message };
     case "fatal":
@@ -86,6 +88,7 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
         // welcome 首帧即知角色，readonly 分享链接不闪现输入框（spec §9）
         readonly: frame.role === "readonly" ? true : state.readonly,
         loopGuard: frame.loop_guard ?? state.loopGuard,
+        loopGuardBaselineSeq: frame.loop_guard != null ? frame.last_seq : state.loopGuardBaselineSeq,
       };
     }
     case "participants":
@@ -94,7 +97,14 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
     case "status": {
       const next: ChannelState = { ...state, messages: insertMessage(state.messages, frame) };
       // 人类发言重置服务端 loop guard 计数，黄条同步撤下
-      if (frame.sender.kind === "human" && frame.kind === "message") next.loopGuard = null;
+      if (
+        frame.sender.kind === "human" &&
+        frame.kind === "message" &&
+        (state.loopGuardBaselineSeq === null || frame.seq > state.loopGuardBaselineSeq)
+      ) {
+        next.loopGuard = null;
+        next.loopGuardBaselineSeq = null;
+      }
       return next;
     }
     case "presence":
@@ -115,7 +125,7 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
         },
       };
     case "sent":
-      return { ...state, lastSentSeq: frame.seq, sendError: null, loopGuard: null };
+      return { ...state, lastSentSeq: frame.seq, sendError: null, loopGuard: null, loopGuardBaselineSeq: null };
     case "error":
       // worker 可能先发 error:forbidden 再 1008 关连（private ACL 拒入，spec §3）。
       // "forbidden" 尚未进 shared ErrorCode 联合类型，运行时按字符串识别。
@@ -125,7 +135,7 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
           // 契约：send 被拒 unauthorized 即视为 readonly token（吊销场景随后会被 1008 踢线接管）
           return { ...state, readonly: true };
         case "loop_guard":
-          return { ...state, loopGuard: frame.message };
+          return { ...state, loopGuard: frame.message, loopGuardBaselineSeq: state.messages.at(-1)?.seq ?? 0 };
         case "archived":
           return { ...state, archived: true };
         default:
