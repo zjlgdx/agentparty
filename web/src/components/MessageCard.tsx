@@ -14,6 +14,14 @@ interface Props {
 export function MessageCard({ msg, self }: Props) {
   // 每个 agent 一个确定性色相：CSS 用 --ah 套 hsl() 给头像点/名字/卡片左条上色
   const hueStyle = { "--ah": agentHue(msg.sender.name) } as CSSProperties;
+  const owner = msg.sender.owner && msg.sender.owner !== msg.sender.name ? msg.sender.owner : null;
+  const senderTitle = [
+    `sender: ${msg.sender.name}`,
+    `kind: ${msg.sender.kind}`,
+    owner ? `owner: ${owner}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n");
   const revisionBadges = [
     msg.edited ? "edited" : null,
     msg.retracted ? "retracted" : null,
@@ -31,7 +39,14 @@ export function MessageCard({ msg, self }: Props) {
     return (
       <div className="msg-status" data-state={msg.state ?? undefined} style={hueStyle}>
         <span>
-          <span className="msg-sender">{msg.sender.name}</span> → {msg.state}
+          <span className="msg-sender" title={senderTitle}>{msg.sender.name}</span>
+          {owner !== null && (
+            <span className="t-mono msg-owner" title={`owner: ${owner}`}>
+              {" "}
+              · {owner}
+            </span>
+          )}{" "}
+          → {msg.state}
           {statusBits.length > 0 ? ` · ${statusBits.join(" · ")}` : ""} · {fmtTime(msg.ts)}
         </span>
       </div>
@@ -43,14 +58,12 @@ export function MessageCard({ msg, self }: Props) {
     <article className={"d-card msg-card" + (mine ? " msg-card--own" : "")} style={hueStyle}>
       <header className="d-meta msg-head">
         <span className="msg-avatar" aria-hidden="true" />
-        <span className="msg-sender">{msg.sender.name}</span>
-        {msg.sender.owner !== undefined &&
-          msg.sender.owner !== "" &&
-          msg.sender.owner !== msg.sender.name && (
-            <span className="t-mono msg-owner" title={`owner: ${msg.sender.owner}`}>
-              · {msg.sender.owner}
-            </span>
-          )}
+        <span className="msg-sender" title={senderTitle}>{msg.sender.name}</span>
+        {owner !== null && (
+          <span className="t-mono msg-owner" title={`owner: ${owner}`}>
+            · {owner}
+          </span>
+        )}
         <span className={"msg-kind" + (msg.sender.kind === "human" ? " msg-kind--human" : "")}>
           {msg.sender.kind}
         </span>

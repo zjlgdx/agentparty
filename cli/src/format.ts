@@ -1,6 +1,11 @@
 // 消息打印格式："[seq] name(kind): body 首行"，多行缩进跟随
 import type { MsgFrame } from "@agentparty/shared";
 
+function formatSender(m: MsgFrame): string {
+  const owner = m.sender.owner && m.sender.owner !== m.sender.name ? ` owner=${m.sender.owner}` : "";
+  return `${m.sender.name}(${m.sender.kind}${owner})`;
+}
+
 export function formatMsg(m: MsgFrame): string {
   const badges = [
     m.edited ? "edited" : null,
@@ -9,7 +14,7 @@ export function formatMsg(m: MsgFrame): string {
     m.superseded_by !== undefined ? `superseded by #${m.superseded_by}` : null,
   ].filter((part): part is string => part !== null);
   const suffix = badges.length > 0 ? ` {${badges.join("; ")}}` : "";
-  const prefix = `[${m.seq}] ${m.sender.name}(${m.sender.kind})${suffix}: `;
+  const prefix = `[${m.seq}] ${formatSender(m)}${suffix}: `;
   if (m.kind === "status") {
     const parts = [m.note, m.status?.scope.length ? `scope=${m.status.scope.join(",")}` : null];
     if (m.status?.blocked_reason) parts.push(`blocked=${m.status.blocked_reason}`);
