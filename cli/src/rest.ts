@@ -5,6 +5,7 @@ import {
   EXIT_LOOP_GUARD,
   type CaptureKind,
   type CaptureRecord,
+  type AgentLineage,
   type ChannelKind,
   type ChannelMode,
   type CollaborationRole,
@@ -116,10 +117,12 @@ export interface Identity {
   owner: string | null;
   // 权限自省（whoami --caps）：旧 server 无这些字段（可选）
   channel_scope?: string | null;
+  lineage?: AgentLineage | null;
   caps?: {
     send: boolean;
     create_channel: boolean;
     mint_agents: boolean;
+    spawn_children?: boolean;
     scoped_to: string | null;
   };
 }
@@ -142,6 +145,39 @@ export async function createAgent(
     headers: bearerJson(token),
     body: JSON.stringify(body),
   })) as { token: string; name: string; owner?: string; channel_scope?: string };
+}
+
+export async function spawnAgent(
+  server: string,
+  token: string,
+  name: string,
+  channelScope: string,
+  opts: { ttlSec?: number; teamId?: string } = {},
+): Promise<{
+  token: string;
+  name: string;
+  role: "agent";
+  owner: string;
+  channel_scope: string;
+  lineage: AgentLineage;
+  expires_at: number;
+}> {
+  const body: Record<string, unknown> = { name, channel_scope: channelScope };
+  if (opts.ttlSec !== undefined) body.ttl_sec = opts.ttlSec;
+  if (opts.teamId !== undefined) body.team_id = opts.teamId;
+  return (await req(server, "/api/spawn", {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as {
+    token: string;
+    name: string;
+    role: "agent";
+    owner: string;
+    channel_scope: string;
+    lineage: AgentLineage;
+    expires_at: number;
+  };
 }
 
 export async function createToken(

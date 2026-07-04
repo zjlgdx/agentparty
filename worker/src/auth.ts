@@ -1,5 +1,5 @@
 // bearer/token 工具 — worker 侧鉴权唯一入口
-import type { SenderKind, TokenRole } from "@agentparty/shared";
+import type { AgentLineage, SenderKind, TokenRole } from "@agentparty/shared";
 
 export interface TokenIdentity {
   name: string;
@@ -17,6 +17,7 @@ export interface TokenIdentity {
   // channel-scoped token（spec §5.3）：把该 token 限死单频道 slug。非空即触发 canAccessChannel 硬上限。
   //   OIDC 人类恒无 scope；普通 ap_ token 为 null/undefined；scoped token 取 tokens.channel_scope 列。
   channel_scope?: string;
+  lineage?: AgentLineage;
 }
 
 export type BearerSource = "authorization" | "protocol" | "query";
@@ -86,12 +87,39 @@ export async function lookupToken(
     return verifyOidcToken(token, oidc);
   }
   const hash = await sha256Hex(token);
+  const now = Date.now();
   const row = await db
-    .prepare("SELECT name, role, owner, channel_scope FROM tokens WHERE hash = ? AND revoked_at IS NULL")
-    .bind(hash)
-    .first<{ name: string; role: string; owner: string | null; channel_scope: string | null }>();
+    .prepare(
+      `SELECT name, role, owner, channel_scope, parent_agent, root_agent, team_id, spawn_depth, child_expires_at
+         FROM tokens
+        WHERE hash = ?
+          AND revoked_at IS NULL
+          AND (child_expires_at IS NULL OR child_expires_at > ?)`,
+    )
+    .bind(hash, now)
+    .first<{
+      name: string;
+      role: string;
+      owner: string | null;
+      channel_scope: string | null;
+      parent_agent: string | null;
+      root_agent: string | null;
+      team_id: string | null;
+      spawn_depth: number | null;
+      child_expires_at: number | null;
+    }>();
   if (!row) return null;
   const role = row.role as TokenRole;
+  const lineage =
+    row.parent_agent === null || row.root_agent === null || row.team_id === null || row.spawn_depth === null
+      ? undefined
+      : {
+          parent_agent: row.parent_agent,
+          root_agent: row.root_agent,
+          team_id: row.team_id,
+          depth: Number(row.spawn_depth),
+          expires_at: row.child_expires_at ?? null,
+        };
   return {
     name: row.name,
     role,
@@ -102,6 +130,7 @@ export async function lookupToken(
     account: row.owner ?? undefined,
     // scoped token（含 readonly 分享 token）带 channel_scope；普通 token 为 undefined
     channel_scope: row.channel_scope ?? undefined,
+    ...(lineage === undefined ? {} : { lineage }),
   };
 }
 

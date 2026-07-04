@@ -114,6 +114,14 @@ export interface CaptureRecord {
   };
 }
 
+export interface AgentLineage {
+  parent_agent: string;
+  root_agent: string;
+  team_id: string;
+  depth: number;
+  expires_at: number | null;
+}
+
 export interface SearchHit {
   type: "search_hit";
   channel: string;
@@ -142,6 +150,7 @@ export interface Sender {
   kind: SenderKind;
   /** 所属人：机器 ap_ token 铸造时写入的标签，人类 OIDC token 为其 email。无则省略（旧客户端忽略） */
   owner?: string;
+  lineage?: AgentLineage;
 }
 
 export interface PresenceEntry {
@@ -156,6 +165,7 @@ export interface PresenceEntry {
   residency?: Residency;
   wake?: WakeInfo;
   context?: AgentContext;
+  lineage?: AgentLineage;
 }
 
 // ---- 客户端 → 服务端帧 ----
@@ -295,6 +305,7 @@ export interface PresenceFrame {
   residency?: Residency;
   wake?: WakeInfo;
   context?: AgentContext;
+  lineage?: AgentLineage;
 }
 
 export interface ErrorFrame {

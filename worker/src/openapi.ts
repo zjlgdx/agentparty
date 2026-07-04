@@ -75,9 +75,40 @@ export const openapiDocument = {
         },
       },
     },
+    "/api/spawn": {
+      post: {
+        summary: "spawn a short-lived child agent from a channel-scoped parent agent",
+        security: [{ bearer: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "channel_scope"],
+                properties: {
+                  name: { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$" },
+                  channel_scope: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,63}$" },
+                  ttl_sec: { type: "integer", minimum: 60, maximum: 86400 },
+                  team_id: { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "child agent token minted with lineage; plaintext returned only once" },
+          "400": { description: "invalid name, channel_scope, ttl_sec, or team_id" },
+          "401": { description: "missing or invalid bearer" },
+          "403": { description: "caller is not a channel-scoped parent agent or scope would be widened" },
+          "404": { description: "channel not found" },
+          "409": { description: "name already exists" },
+        },
+      },
+    },
     "/api/me": {
       get: {
-        summary: "current signed-in identity (name, email, kind, role, owner)",
+        summary: "current signed-in identity (name, email, kind, role, owner, lineage)",
         security: [{ bearer: [] }],
         responses: {
           "200": { description: "identity of the bearer token" },

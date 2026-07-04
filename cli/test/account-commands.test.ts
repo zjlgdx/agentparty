@@ -7,6 +7,7 @@ import { writeAccount } from "../src/account";
 import { tokenFingerprint, writeConfig, writeState } from "../src/config";
 import { run as sendRun } from "../src/commands/send";
 import { run as agentRun } from "../src/commands/agent";
+import { run as spawnRun } from "../src/commands/spawn";
 import { run as whoamiRun } from "../src/commands/whoami";
 import { run as logoutRun } from "../src/commands/logout";
 import { startOidcMock, type OidcMock } from "./oidc-mock";
@@ -192,6 +193,43 @@ describe("agent add", () => {
     const code = await agentRun(["add", "botty", "--channel-scope", "BAD_SLUG"]);
     expect(code).toBe(1);
     expect(mock.requests.find((r) => r.path === "/api/agents")).toBeUndefined();
+  });
+});
+
+describe("spawn", () => {
+  test("uses runtime config token to spawn a channel-scoped child", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_parent" });
+    liveAccount(mock.url);
+
+    const code = await spawnRun(["child-bot", "--channel-scope", "ops", "--ttl", "30m", "--team-id", "team.1"]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/spawn");
+    expect(req?.method).toBe("POST");
+    expect(req?.auth).toBe("Bearer ap_parent");
+    expect(req?.body).toEqual({ name: "child-bot", channel_scope: "ops", ttl_sec: 1800, team_id: "team.1" });
+    expect(logs.join("\n")).toContain("ap_child-bot_secret");
+    expect(errs.join("\n")).toContain("party init --server");
+    expect(errs.join("\n")).toContain("--channel ops");
+  });
+
+  test("rejects invalid ttl and channel-scope before any request", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_parent" });
+
+    const badTtl = await spawnRun(["child", "--channel-scope", "ops", "--ttl", "soon"]);
+    expect(badTtl).toBe(1);
+    const badScope = await spawnRun(["child", "--channel-scope", "Bad"]);
+    expect(badScope).toBe(1);
+    expect(mock.requests.find((r) => r.path === "/api/spawn")).toBeUndefined();
+  });
+
+  test("requires a runtime token", async () => {
+    mock = startOidcMock();
+    const code = await spawnRun(["child", "--channel-scope", "ops"]);
+    expect(code).toBe(1);
+    expect(errs.join("\n")).toContain("no config");
+    expect(mock.requests.find((r) => r.path === "/api/spawn")).toBeUndefined();
   });
 });
 

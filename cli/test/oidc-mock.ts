@@ -99,6 +99,28 @@ export function startOidcMock(opts: MockOptions = {}): OidcMock {
           ...(b?.channel_scope ? { channel_scope: b.channel_scope } : {}),
         });
       }
+      if (req.method === "POST" && u.pathname === "/api/spawn") {
+        const b = rec.body as { name?: string; channel_scope?: string; ttl_sec?: number; team_id?: string } | null;
+        const expiresAt = Date.now() + (b?.ttl_sec ?? 7200) * 1000;
+        return Response.json(
+          {
+            token: `ap_${b?.name ?? "x"}_secret`,
+            name: b?.name ?? "x",
+            role: "agent",
+            owner: "fan@example.com",
+            channel_scope: b?.channel_scope ?? "ops",
+            lineage: {
+              parent_agent: "parent",
+              root_agent: "parent",
+              team_id: b?.team_id ?? "parent",
+              depth: 1,
+              expires_at: expiresAt,
+            },
+            expires_at: expiresAt,
+          },
+          { status: 201 },
+        );
+      }
       if (req.method === "POST" && /^\/api\/channels\/[^/]+\/messages$/.test(u.pathname)) {
         return Response.json({ seq: 7 });
       }

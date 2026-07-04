@@ -25,13 +25,37 @@ async function sha256Hex(input: string): Promise<string> {
 export async function seedToken(
   role: TokenRole,
   name = uniq(`tok-${role}`),
-  opts: { owner?: string; channelScope?: string } = {},
+  opts: {
+    owner?: string;
+    channelScope?: string;
+    parentAgent?: string;
+    rootAgent?: string;
+    teamId?: string;
+    spawnDepth?: number;
+    childExpiresAt?: number;
+  } = {},
 ) {
   const token = `ap_${crypto.randomUUID().replaceAll("-", "")}`;
   await env.DB.prepare(
-    "INSERT INTO tokens (hash, name, role, owner, channel_scope, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    `INSERT INTO tokens (
+       hash, name, role, owner, channel_scope,
+       parent_agent, root_agent, team_id, spawn_depth, child_expires_at,
+       created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(await sha256Hex(token), name, role, opts.owner ?? null, opts.channelScope ?? null, Date.now())
+    .bind(
+      await sha256Hex(token),
+      name,
+      role,
+      opts.owner ?? null,
+      opts.channelScope ?? null,
+      opts.parentAgent ?? null,
+      opts.rootAgent ?? null,
+      opts.teamId ?? null,
+      opts.spawnDepth ?? null,
+      opts.childExpiresAt ?? null,
+      Date.now(),
+    )
     .run();
   return { token, name };
 }

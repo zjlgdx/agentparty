@@ -15,6 +15,7 @@ import {
   WEBHOOK_RETRY_BATCH_SIZE,
   WEBHOOK_RETRY_DELAYS_MS,
   WEBHOOK_TIMEOUT_MS,
+  type AgentLineage,
   type ErrorCode,
   type AgentContext,
   type CollaborationRole,
@@ -47,6 +48,7 @@ interface ConnState {
   kind: SenderKind;
   role: TokenRole;
   owner?: string;
+  lineage?: AgentLineage;
   tokenHash: string;
   collabRole?: CollaborationRole;
   collabRoleSource?: CollaborationRoleSource;
@@ -59,6 +61,7 @@ interface Identity {
   kind: SenderKind;
   role: TokenRole;
   owner?: string;
+  lineage?: AgentLineage;
   tokenHash: string;
   collabRole?: CollaborationRole;
   collabRoleSource?: CollaborationRoleSource;
@@ -330,6 +333,72 @@ function parseStoredAgentContext(input: unknown): AgentContext | undefined {
   }
 }
 
+function parseStoredLineage(input: unknown): AgentLineage | undefined {
+  if (typeof input !== "string" || input === "") return undefined;
+  try {
+    return parseLineage(JSON.parse(input) as unknown) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseLineage(input: unknown): AgentLineage | null {
+  if (typeof input !== "object" || input === null) return null;
+  const raw = input as Record<string, unknown>;
+  if (
+    typeof raw.parent_agent !== "string" ||
+    !MENTION_NAME_RE.test(raw.parent_agent) ||
+    typeof raw.root_agent !== "string" ||
+    !MENTION_NAME_RE.test(raw.root_agent) ||
+    typeof raw.team_id !== "string" ||
+    !MENTION_NAME_RE.test(raw.team_id) ||
+    typeof raw.depth !== "number" ||
+    !Number.isInteger(raw.depth) ||
+    raw.depth < 1 ||
+    raw.depth > 16
+  ) {
+    return null;
+  }
+  if (raw.expires_at !== null && (typeof raw.expires_at !== "number" || !Number.isInteger(raw.expires_at))) {
+    return null;
+  }
+  return {
+    parent_agent: raw.parent_agent,
+    root_agent: raw.root_agent,
+    team_id: raw.team_id,
+    depth: raw.depth,
+    expires_at: raw.expires_at,
+  };
+}
+
+function lineageFromHeaders(headers: Headers): AgentLineage | undefined {
+  const parent = headers.get("x-ap-parent-agent");
+  const root = headers.get("x-ap-root-agent");
+  const team = headers.get("x-ap-team-id");
+  const depth = Number(headers.get("x-ap-spawn-depth") ?? "");
+  const expiresRaw = headers.get("x-ap-child-expires-at");
+  if (parent === null && root === null && team === null && headers.get("x-ap-spawn-depth") === null && expiresRaw === null) {
+    return undefined;
+  }
+  const lineage = parseLineage({
+    parent_agent: parent,
+    root_agent: root,
+    team_id: team,
+    depth,
+    expires_at: expiresRaw === null ? null : Number(expiresRaw),
+  });
+  return lineage ?? undefined;
+}
+
+function senderFromIdentity(identity: Pick<Identity, "name" | "kind" | "owner" | "lineage">): Sender {
+  return {
+    name: identity.name,
+    kind: identity.kind,
+    ...(identity.owner === undefined ? {} : { owner: identity.owner }),
+    ...(identity.lineage === undefined ? {} : { lineage: identity.lineage }),
+  };
+}
+
 function safeContextString(input: unknown, max = 160): string | undefined | null {
   if (input === undefined) return undefined;
   if (typeof input !== "string") return null;
@@ -485,6 +554,7 @@ export class ChannelDO extends Server<Env> {
       sender_name TEXT NOT NULL,
       sender_kind TEXT NOT NULL,
       sender_owner TEXT,
+      sender_lineage_json TEXT,
       kind TEXT NOT NULL,
       body TEXT NOT NULL,
       mentions_json TEXT NOT NULL DEFAULT '[]',
@@ -515,6 +585,7 @@ export class ChannelDO extends Server<Env> {
       // 列已存在
     }
     for (const ddl of [
+      "ALTER TABLE messages ADD COLUMN sender_lineage_json TEXT",
       "ALTER TABLE messages ADD COLUMN status_scope_json TEXT",
       "ALTER TABLE messages ADD COLUMN status_summary_seq INTEGER",
       "ALTER TABLE messages ADD COLUMN status_blocked_reason TEXT",
@@ -552,7 +623,8 @@ export class ChannelDO extends Server<Env> {
       residency TEXT,
       wake_kind TEXT,
       wake_verified_at INTEGER,
-      context_json TEXT
+      context_json TEXT,
+      lineage_json TEXT
     )`);
     for (const ddl of [
       "ALTER TABLE presence ADD COLUMN role TEXT",
@@ -561,6 +633,7 @@ export class ChannelDO extends Server<Env> {
       "ALTER TABLE presence ADD COLUMN wake_kind TEXT",
       "ALTER TABLE presence ADD COLUMN wake_verified_at INTEGER",
       "ALTER TABLE presence ADD COLUMN context_json TEXT",
+      "ALTER TABLE presence ADD COLUMN lineage_json TEXT",
       "ALTER TABLE presence ADD COLUMN status_scope_json TEXT",
       "ALTER TABLE presence ADD COLUMN status_summary_seq INTEGER",
       "ALTER TABLE presence ADD COLUMN status_blocked_reason TEXT",
@@ -633,6 +706,7 @@ export class ChannelDO extends Server<Env> {
       kind: h.get("x-ap-kind") === "agent" ? "agent" : "human",
       role: (h.get("x-ap-role") ?? "readonly") as TokenRole,
       owner: h.get("x-ap-owner") ?? undefined,
+      lineage: lineageFromHeaders(h),
       tokenHash: h.get("x-ap-token-hash") ?? "",
       collabRole: parseCollaborationRole(h.get("x-ap-collab-role") ?? undefined) ?? undefined,
       collabRoleSource: parseRoleSource(h.get("x-ap-role-source") ?? undefined) ?? undefined,
@@ -737,6 +811,7 @@ export class ChannelDO extends Server<Env> {
           kind: st.kind,
           role: st.role,
           owner: st.owner,
+          lineage: st.lineage,
           tokenHash: st.tokenHash,
           collabRole: st.collabRole,
           collabRoleSource: st.collabRoleSource,
@@ -1082,9 +1157,7 @@ export class ChannelDO extends Server<Env> {
       type: "message_update",
       target_seq: message.seq,
       action,
-      actor: actor.owner
-        ? { name: actor.name, kind: actor.kind, owner: actor.owner }
-        : { name: actor.name, kind: actor.kind },
+      actor: senderFromIdentity(actor),
       ts,
       message,
     };
@@ -1235,6 +1308,7 @@ export class ChannelDO extends Server<Env> {
         kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
         role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
         owner: request.headers.get("x-ap-owner") ?? undefined,
+        lineage: lineageFromHeaders(request.headers),
         tokenHash: request.headers.get("x-ap-token-hash") ?? "",
         collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
         collabRoleSource: parseRoleSource(request.headers.get("x-ap-role-source") ?? undefined) ?? undefined,
@@ -1440,6 +1514,7 @@ export class ChannelDO extends Server<Env> {
         kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
         role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
         owner: request.headers.get("x-ap-owner") ?? undefined,
+        lineage: lineageFromHeaders(request.headers),
         tokenHash: request.headers.get("x-ap-token-hash") ?? "",
         collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
         collabRoleSource: parseRoleSource(request.headers.get("x-ap-role-source") ?? undefined) ?? undefined,
@@ -1623,9 +1698,7 @@ export class ChannelDO extends Server<Env> {
 
     const sql = this.ctx.storage.sql;
     const seq = this.lastSeq() + 1;
-    const sender: Sender = identity.owner
-      ? { name: identity.name, kind: identity.kind, owner: identity.owner }
-      : { name: identity.name, kind: identity.kind };
+    const sender: Sender = senderFromIdentity(identity);
     const hostDecision = frame.kind === "status" ? hostDecisionFromSend(frame.decision, identity.name) : undefined;
     const status: StatusEvent | null =
       frame.kind === "status"
@@ -1682,16 +1755,17 @@ export class ChannelDO extends Server<Env> {
           };
     sql.exec(
       `INSERT INTO messages (
-         seq, sender_name, sender_kind, sender_owner, kind, body, mentions_json, reply_to,
+         seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
          status_decision_json,
          sender_role, sender_role_source, completion_artifact_json, ts
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       seq,
       identity.name,
       identity.kind,
       identity.owner ?? null,
+      identity.lineage === undefined ? null : JSON.stringify(identity.lineage),
       msg.kind,
       msg.body,
       JSON.stringify(msg.mentions),
@@ -1727,9 +1801,10 @@ export class ChannelDO extends Server<Env> {
       sql.exec(
         `INSERT INTO presence (
            name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
-           status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at, context_json
+           status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at, context_json,
+           lineage_json
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            state = excluded.state,
            note = excluded.note,
@@ -1744,7 +1819,8 @@ export class ChannelDO extends Server<Env> {
            residency = COALESCE(excluded.residency, presence.residency),
            wake_kind = CASE WHEN ? THEN excluded.wake_kind ELSE presence.wake_kind END,
            wake_verified_at = CASE WHEN ? THEN excluded.wake_verified_at ELSE presence.wake_verified_at END,
-           context_json = COALESCE(excluded.context_json, presence.context_json)`,
+           context_json = COALESCE(excluded.context_json, presence.context_json),
+           lineage_json = excluded.lineage_json`,
         identity.name,
         frame.state,
         frame.note,
@@ -1760,6 +1836,7 @@ export class ChannelDO extends Server<Env> {
         frame.wake?.kind ?? null,
         frame.wake?.verified_at ?? null,
         frame.context === undefined ? null : JSON.stringify(frame.context),
+        identity.lineage === undefined ? null : JSON.stringify(identity.lineage),
         wakeProvided,
         wakeProvided,
       );
@@ -1847,8 +1924,13 @@ export class ChannelDO extends Server<Env> {
     // OIDC 人类 token 不落 D1，无法被吊销扫描；生命周期由 JWT exp 在 worker 边界管辖（spec §10）
     if (hash.startsWith("oidc:")) return true;
     try {
-      const row = await this.env.DB.prepare("SELECT id FROM tokens WHERE hash = ? AND revoked_at IS NULL")
-        .bind(hash)
+      const row = await this.env.DB.prepare(
+        `SELECT id FROM tokens
+          WHERE hash = ?
+            AND revoked_at IS NULL
+            AND (child_expires_at IS NULL OR child_expires_at > ?)`,
+      )
+        .bind(hash, Date.now())
         .first<{ id: number }>();
       return row !== null;
     } catch {
@@ -1923,7 +2005,7 @@ export class ChannelDO extends Server<Env> {
     for (const connection of this.getConnections<ConnState>()) {
       const st = connection.state;
       if (st?.name && !seen.has(st.name)) {
-        seen.set(st.name, st.owner ? { name: st.name, kind: st.kind, owner: st.owner } : { name: st.name, kind: st.kind });
+        seen.set(st.name, senderFromIdentity(st));
       }
     }
     return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -1951,7 +2033,7 @@ export class ChannelDO extends Server<Env> {
       .exec(
         `SELECT name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
                 status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at,
-                context_json
+                context_json, lineage_json
          FROM presence ORDER BY name`,
       )
       .toArray()
@@ -1963,7 +2045,7 @@ export class ChannelDO extends Server<Env> {
       .exec(
         `SELECT name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
                 status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at,
-                context_json
+                context_json, lineage_json
          FROM presence WHERE name = ?`,
         name,
       )
@@ -2001,6 +2083,10 @@ export class ChannelDO extends Server<Env> {
         const context = parseStoredAgentContext(r.context_json);
         return context === undefined ? {} : { context };
       })(),
+      ...(() => {
+        const lineage = parseStoredLineage(r.lineage_json);
+        return lineage === undefined ? {} : { lineage };
+      })(),
     };
   }
 
@@ -2016,10 +2102,15 @@ export class ChannelDO extends Server<Env> {
     const frame: MsgFrame = {
       type: kind === "status" ? "status" : "msg",
       seq: Number(r.seq),
-      sender:
-        r.sender_owner === null || r.sender_owner === undefined
-          ? { name: String(r.sender_name), kind: String(r.sender_kind) as SenderKind }
-          : { name: String(r.sender_name), kind: String(r.sender_kind) as SenderKind, owner: String(r.sender_owner) },
+      sender: {
+        name: String(r.sender_name),
+        kind: String(r.sender_kind) as SenderKind,
+        ...(r.sender_owner === null || r.sender_owner === undefined ? {} : { owner: String(r.sender_owner) }),
+        ...(() => {
+          const lineage = parseStoredLineage(r.sender_lineage_json);
+          return lineage === undefined ? {} : { lineage };
+        })(),
+      },
       kind,
       body: String(r.body),
       mentions: JSON.parse(String(r.mentions_json ?? "[]")) as string[],

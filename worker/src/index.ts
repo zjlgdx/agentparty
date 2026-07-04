@@ -1,6 +1,7 @@
 // worker 入口 — rest 路由 + ws 升级转发
 import { RESERVED_NAMES } from "@agentparty/shared";
 import type {
+  AgentLineage,
   CaptureKind,
   CaptureRecord,
   ChannelKind,
@@ -55,6 +56,11 @@ const AP_FORWARD_HEADERS = [
   "x-ap-role",
   "x-ap-owner",
   "x-ap-token-hash",
+  "x-ap-parent-agent",
+  "x-ap-root-agent",
+  "x-ap-team-id",
+  "x-ap-spawn-depth",
+  "x-ap-child-expires-at",
   "x-ap-mode",
   "x-ap-channel-kind",
   "x-ap-host",
@@ -69,6 +75,8 @@ const OWNER_RE = /^[\x20-\x7e]{1,128}$/;
 // CLI 用来跑回环 PKCE 的 public client（account.leeguoo.com 已登记）。CLI 拉 /api/config 得知用哪个
 const CLI_CLIENT_ID = "agentparty-cli";
 const CAPTURE_NOTE_MAX = 4000;
+const SPAWN_DEFAULT_TTL_SEC = 2 * 60 * 60;
+const SPAWN_MAX_TTL_SEC = 24 * 60 * 60;
 
 function errorBody(code: RestErrorCode, message: string) {
   return { error: { code, message } };
@@ -119,7 +127,13 @@ function captureRowToRecord(row: {
 // 否则插新行。返回一次性明文 token。
 async function persistToken(
   db: D1Database,
-  opts: { name: string; role: TokenRole; owner: string; channelScope: string | null },
+  opts: {
+    name: string;
+    role: TokenRole;
+    owner: string;
+    channelScope: string | null;
+    lineage?: AgentLineage;
+  },
 ): Promise<{ token: string } | { conflict: true }> {
   const existing = await db
     .prepare("SELECT id, revoked_at FROM tokens WHERE name = ?")
@@ -132,14 +146,48 @@ async function persistToken(
   if (existing) {
     await db
       .prepare(
-        "UPDATE tokens SET hash = ?, role = ?, owner = ?, channel_scope = ?, created_at = ?, revoked_at = NULL WHERE id = ?",
+        `UPDATE tokens
+            SET hash = ?, role = ?, owner = ?, channel_scope = ?,
+                parent_agent = ?, root_agent = ?, team_id = ?, spawn_depth = ?, child_expires_at = ?,
+                created_at = ?, revoked_at = NULL
+          WHERE id = ?`,
       )
-      .bind(hash, opts.role, opts.owner, opts.channelScope, now, existing.id)
+      .bind(
+        hash,
+        opts.role,
+        opts.owner,
+        opts.channelScope,
+        opts.lineage?.parent_agent ?? null,
+        opts.lineage?.root_agent ?? null,
+        opts.lineage?.team_id ?? null,
+        opts.lineage?.depth ?? null,
+        opts.lineage?.expires_at ?? null,
+        now,
+        existing.id,
+      )
       .run();
   } else {
     await db
-      .prepare("INSERT INTO tokens (hash, name, role, owner, channel_scope, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(hash, opts.name, opts.role, opts.owner, opts.channelScope, now)
+      .prepare(
+        `INSERT INTO tokens (
+           hash, name, role, owner, channel_scope,
+           parent_agent, root_agent, team_id, spawn_depth, child_expires_at,
+           created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        hash,
+        opts.name,
+        opts.role,
+        opts.owner,
+        opts.channelScope,
+        opts.lineage?.parent_agent ?? null,
+        opts.lineage?.root_agent ?? null,
+        opts.lineage?.team_id ?? null,
+        opts.lineage?.depth ?? null,
+        opts.lineage?.expires_at ?? null,
+        now,
+      )
       .run();
   }
   return { token };
@@ -209,6 +257,18 @@ async function loadAssignedRole(db: D1Database, slug: string, name: string): Pro
 
 function assignedRoleHeaders(role: CollaborationRole | null): Record<string, string> {
   return role === null ? {} : { "x-ap-collab-role": role, "x-ap-role-source": "assigned" };
+}
+
+function lineageHeaders(identity: TokenIdentity): Record<string, string> {
+  const lineage = identity.lineage;
+  if (lineage === undefined) return {};
+  return {
+    "x-ap-parent-agent": lineage.parent_agent,
+    "x-ap-root-agent": lineage.root_agent,
+    "x-ap-team-id": lineage.team_id,
+    "x-ap-spawn-depth": String(lineage.depth),
+    ...(lineage.expires_at === null ? {} : { "x-ap-child-expires-at": String(lineage.expires_at) }),
+  };
 }
 
 function isPrivateIpv4(host: string): boolean {
@@ -296,12 +356,16 @@ app.get("/api/me", requireBearer, (c) => {
     role: id.role,
     owner: id.owner ?? null,
     channel_scope: id.channel_scope ?? null,
+    lineage: id.lineage ?? null,
     caps: {
       send: id.role !== "readonly",
       // scoped token 不得建频道（会逃出 scope）；readonly 也不行
       create_channel: id.role !== "readonly" && !scoped,
       // POST /api/agents 的门：human 账号会话（有 account）才能自助铸 agent
       mint_agents: id.role === "human" && id.account != null,
+      // POST /api/spawn 的门：父 agent 必须已被限定在一个频道，子身份同 scope 且短 TTL。
+      spawn_children:
+        id.role === "agent" && id.account != null && id.channel_scope != null && id.lineage === undefined,
       scoped_to: id.channel_scope ?? null,
     },
   });
@@ -399,6 +463,86 @@ app.post("/api/agents", requireBearer, async (c) => {
     effectiveScope !== null
       ? { token, name, role: "agent", owner, channel_scope: effectiveScope }
       : { token, name, role: "agent", owner },
+    201,
+  );
+});
+
+// Agent 子身份（#18 MVP）：父 agent 可在自己的频道 scope 内创建短期 child token。
+// 不建 workflow DAG；只保证可验证的 parent/root/team/depth/expires_at 身份血缘与权限边界。
+app.post("/api/spawn", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "agent" || identity.account == null || identity.channel_scope == null) {
+    return c.json(
+      errorBody("forbidden", "spawning child agents requires an account-owned channel-scoped agent token"),
+      403,
+    );
+  }
+  if (identity.lineage !== undefined) {
+    return c.json(errorBody("forbidden", "child agents cannot spawn more child agents"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as
+    | { name?: unknown; channel_scope?: unknown; ttl_sec?: unknown; team_id?: unknown }
+    | null;
+  const name = typeof body?.name === "string" ? body.name : "";
+  if (!NAME_RE.test(name)) {
+    return c.json(errorBody("bad_request", "valid name required"), 400);
+  }
+  if (RESERVED_NAMES.includes(name)) {
+    return c.json(errorBody("bad_request", "name is reserved"), 400);
+  }
+  const requestedScope = body?.channel_scope === undefined || body?.channel_scope === null ? identity.channel_scope : body.channel_scope;
+  if (typeof requestedScope !== "string" || !SLUG_RE.test(requestedScope)) {
+    return c.json(errorBody("bad_request", "channel_scope must be a valid channel slug"), 400);
+  }
+  if (requestedScope !== identity.channel_scope) {
+    return c.json(errorBody("forbidden", "child agent must inherit the parent channel scope"), 403);
+  }
+  const channel = await loadChannel(c.env.DB, requestedScope);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!canAccessChannel(identity, channel)) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const ttlSec =
+    body?.ttl_sec === undefined || body?.ttl_sec === null
+      ? SPAWN_DEFAULT_TTL_SEC
+      : typeof body.ttl_sec === "number" && Number.isInteger(body.ttl_sec)
+        ? body.ttl_sec
+        : null;
+  if (ttlSec === null || ttlSec < 60 || ttlSec > SPAWN_MAX_TTL_SEC) {
+    return c.json(errorBody("bad_request", `ttl_sec must be an integer between 60 and ${SPAWN_MAX_TTL_SEC}`), 400);
+  }
+  const teamId = body?.team_id === undefined || body?.team_id === null ? identity.name : body.team_id;
+  if (typeof teamId !== "string" || !NAME_RE.test(teamId)) {
+    return c.json(errorBody("bad_request", "team_id must be a valid agent/name token"), 400);
+  }
+  const expiresAt = Date.now() + ttlSec * 1000;
+  const lineage: AgentLineage = {
+    parent_agent: identity.name,
+    root_agent: identity.name,
+    team_id: teamId,
+    depth: 1,
+    expires_at: expiresAt,
+  };
+  const result = await persistToken(c.env.DB, {
+    name,
+    role: "agent",
+    owner: identity.account,
+    channelScope: identity.channel_scope,
+    lineage,
+  });
+  if ("conflict" in result) {
+    return c.json(errorBody("conflict", "token name already exists, revoke it first"), 409);
+  }
+  return c.json(
+    {
+      token: result.token,
+      name,
+      role: "agent",
+      owner: identity.account,
+      channel_scope: identity.channel_scope,
+      lineage,
+      expires_at: expiresAt,
+    },
     201,
   );
 });
@@ -803,6 +947,7 @@ app.post("/api/channels/:slug/messages/:seq/:action", async (c) => {
         ...(identity.owner ? { "x-ap-owner": identity.owner } : {}),
         "x-ap-token-hash": identity.hash,
         "x-ap-moderator": isChannelModerator(identity, channel) ? "1" : "0",
+        ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
       },
@@ -853,6 +998,7 @@ app.post("/api/channels/:slug/messages", async (c) => {
         "x-ap-role": identity.role,
         ...(identity.owner ? { "x-ap-owner": identity.owner } : {}),
         "x-ap-token-hash": identity.hash,
+        ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
       },
@@ -1058,6 +1204,7 @@ app.get("/api/channels/:slug/ws", async (c) => {
   fwd.headers.set("x-ap-role", identity.role);
   if (identity.owner) fwd.headers.set("x-ap-owner", identity.owner);
   fwd.headers.set("x-ap-token-hash", identity.hash);
+  for (const [key, value] of Object.entries(lineageHeaders(identity))) fwd.headers.set(key, value);
   const assignedRole = await loadAssignedRole(c.env.DB, slug, identity.name);
   if (assignedRole !== null) {
     fwd.headers.set("x-ap-collab-role", assignedRole);

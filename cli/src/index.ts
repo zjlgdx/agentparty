@@ -15,6 +15,7 @@ commands:
   logout                                             clear account session
   whoami    [--json] [--caps]                         print current identity + capabilities (hits /api/me)
   agent     add <name> [--channel-scope slug]        mint an agent token as yourself (needs login)
+  spawn     <child> --channel-scope slug [--ttl 2h]  create a short-lived child agent from current agent
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
   complete  <text|-> --kickoff-seq seq [--channel C] [--replies n] [--timeout] [--issue n]... [--pr n]...
@@ -58,6 +59,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/whoami")).run(rest);
     case "agent":
       return (await import("./commands/agent")).run(rest);
+    case "spawn":
+      return (await import("./commands/spawn")).run(rest);
     case "init":
       return (await import("./commands/init")).run(rest);
     case "send":
