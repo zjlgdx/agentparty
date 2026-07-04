@@ -1,10 +1,20 @@
 // 消息打印格式："[seq] name(kind): body 首行"，多行缩进跟随
-import type { MsgFrame } from "@agentparty/shared";
+import type { AgentContext, MsgFrame } from "@agentparty/shared";
 
 function formatSender(m: MsgFrame): string {
   const owner = m.sender.owner && m.sender.owner !== m.sender.name ? ` owner=${m.sender.owner}` : "";
   const lineage = m.sender.lineage ? ` parent=${m.sender.lineage.parent_agent} team=${m.sender.lineage.team_id}` : "";
   return `${m.sender.name}(${m.sender.kind}${owner}${lineage})`;
+}
+
+function formatContext(ctx: AgentContext | undefined): string[] {
+  if (ctx === undefined) return [];
+  return [
+    ctx.worktree_label ? `worktree=${ctx.worktree_label}` : null,
+    ctx.workspace_label ? `workspace=${ctx.workspace_label}` : null,
+    ctx.config_kind ? `config=${ctx.config_kind}` : null,
+    ctx.config_fingerprint ? `fingerprint=${ctx.config_fingerprint}` : null,
+  ].filter((part): part is string => part !== null);
 }
 
 export function formatMsg(m: MsgFrame): string {
@@ -18,7 +28,7 @@ export function formatMsg(m: MsgFrame): string {
   const suffix = badges.length > 0 ? ` {${badges.join("; ")}}` : "";
   const prefix = `[${m.seq}] ${formatSender(m)}${suffix}: `;
   if (m.kind === "status") {
-    const parts = [m.note, m.status?.scope.length ? `scope=${m.status.scope.join(",")}` : null];
+    const parts = [m.note, ...formatContext(m.status?.context), m.status?.scope.length ? `scope=${m.status.scope.join(",")}` : null];
     if (m.status?.blocked_reason) parts.push(`blocked=${m.status.blocked_reason}`);
     if (m.status?.summary_seq !== null && m.status?.summary_seq !== undefined) parts.push(`summary=#${m.status.summary_seq}`);
     const detail = parts.filter((part): part is string => typeof part === "string" && part !== "").join(" · ");

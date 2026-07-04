@@ -68,4 +68,34 @@ describe("formatMsg", () => {
       ),
     ).toBe("[7] child-a(agent owner=team-a parent=parent-a team=team-run): hello");
   });
+
+  test("prints status execution context", () => {
+    expect(
+      formatMsg(
+        msgFrame({
+          type: "status",
+          kind: "status",
+          body: "checking",
+          note: "checking",
+          state: "working",
+          status: {
+            owner: "agent-a",
+            state: "working",
+            scope: ["web/src"],
+            summary_seq: null,
+            blocked_reason: null,
+            updated_at: 1_725_000_000_000,
+            context: {
+              config_kind: "workspace",
+              config_fingerprint: "ap_12345678",
+              workspace_label: "herness-use",
+              worktree_label: "main",
+            },
+          },
+        }),
+      ),
+    ).toBe(
+      "[7] agent-a(agent owner=team-a): [working] checking · worktree=main · workspace=herness-use · config=workspace · fingerprint=ap_12345678 · scope=web/src",
+    );
+  });
 });

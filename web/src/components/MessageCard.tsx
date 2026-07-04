@@ -1,6 +1,6 @@
 // 消息渲染：message → doodle 卡片外壳 + mono 元信息 + markdown 正文；
 // status → 时间线分隔条（spec §9 第 2 块）。
-import type { MsgFrame } from "@agentparty/shared";
+import type { AgentContext, MsgFrame } from "@agentparty/shared";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
 import { fmtTime } from "../lib/time";
@@ -9,6 +9,16 @@ import { Markdown } from "./Markdown";
 interface Props {
   msg: MsgFrame;
   self: string | null;
+}
+
+function contextBits(ctx: AgentContext | undefined): string[] {
+  if (ctx === undefined) return [];
+  return [
+    ctx.worktree_label ? `wt:${ctx.worktree_label}` : null,
+    ctx.workspace_label ? `ws:${ctx.workspace_label}` : null,
+    ctx.config_kind ? `cfg:${ctx.config_kind}` : null,
+    ctx.config_fingerprint ? `fp:${ctx.config_fingerprint}` : null,
+  ].filter((part): part is string => part !== null);
 }
 
 export function MessageCard({ msg, self }: Props) {
@@ -38,6 +48,16 @@ export function MessageCard({ msg, self }: Props) {
   ].filter((part): part is string => part !== null);
 
   if (msg.kind === "status") {
+    const context = msg.status?.context;
+    const statusContextBits = contextBits(context);
+    const statusTitle = [
+      senderTitle,
+      context?.worktree_label ? `worktree: ${context.worktree_label}` : null,
+      context?.workspace_id ? `workspace id: ${context.workspace_id}` : null,
+      context?.workspace_label ? `workspace: ${context.workspace_label}` : null,
+      context?.config_kind ? `config: ${context.config_kind}` : null,
+      context?.config_fingerprint ? `fingerprint: ${context.config_fingerprint}` : null,
+    ].filter((part): part is string => part !== null && part !== "").join("\n");
     const statusBits = [
       msg.note,
       msg.status?.scope.length ? `scope ${msg.status.scope.join(", ")}` : null,
@@ -59,6 +79,11 @@ export function MessageCard({ msg, self }: Props) {
               {lineageLabel}
             </span>
           )}{" "}
+          {statusContextBits.map((bit) => (
+            <span key={bit} className="t-mono msg-context" title={statusTitle}>
+              {bit}
+            </span>
+          ))}{" "}
           → {msg.state}
           {statusBits.length > 0 ? ` · ${statusBits.join(" · ")}` : ""} · {fmtTime(msg.ts)}
         </span>
