@@ -1,23 +1,33 @@
 // party whoami — 打印当前身份，调 /api/me 验活
+import { parseArgs } from "../args";
 import { handleRestError, fetchMe } from "../rest";
 import { resolveAuth } from "../oidc-cli";
 
-export async function run(_argv: string[]): Promise<number> {
+export async function run(argv: string[]): Promise<number> {
+  const { flags } = parseArgs(argv, { booleans: ["json"] });
+  const json = flags.json === true;
   let auth;
   try {
     auth = await resolveAuth();
   } catch (e) {
-    console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
+    if (json) console.log(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+    else console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
     return 1;
   }
   if (!auth) {
-    console.log("not logged in");
+    if (json) console.log(JSON.stringify({ logged_in: false }));
+    else console.log("not logged in");
     return 0;
   }
   try {
     const me = await fetchMe(auth.server, auth.token);
-    const who = me.email ?? me.name;
-    console.log(`logged in as ${who} (${me.kind}/${me.role})`);
+    if (json) {
+      // 原样吐 /api/me（name/email/kind/role/owner…），供工具判身份/权限，免解析人类串
+      console.log(JSON.stringify({ logged_in: true, server: auth.server, ...me }));
+    } else {
+      const who = me.email ?? me.name;
+      console.log(`logged in as ${who} (${me.kind}/${me.role})`);
+    }
     return 0;
   } catch (e) {
     return handleRestError(e);

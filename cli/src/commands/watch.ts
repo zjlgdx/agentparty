@@ -7,7 +7,7 @@ import { resolveAuth } from "../oidc-cli";
 import { formatMsg } from "../format";
 import { MAX_TIMEOUT_SEC, isSlug, parsePositiveIntFlag } from "../validation";
 
-const WATCH_FLAGS = ["channel", "timeout", "follow", "mentions-only"];
+const WATCH_FLAGS = ["channel", "timeout", "follow", "mentions-only", "json"];
 
 export interface WatchOptions {
   server: string;
@@ -17,6 +17,7 @@ export interface WatchOptions {
   timeoutSec: number;
   follow: boolean;
   mentionsOnly: boolean;
+  json?: boolean; // 输出 NDJSON 帧而非人类格式，供 supervisor/工具消费
   onCursor?: (cursor: number) => void;
   out?: (line: string) => void;
   backoffBaseMs?: number;
@@ -66,7 +67,7 @@ export async function runWatch(o: WatchOptions): Promise<number> {
       const fromSelf = frame.sender.name === self;
       const qualifies = !fromSelf && (!o.mentionsOnly || frame.mentions.includes(self));
       if (qualifies) {
-        out(formatMsg(frame));
+        out(o.json ? JSON.stringify(frame) : formatMsg(frame));
         printed++;
       }
       // 打印（或有意跳过）之后才推进游标，退出时入队未消费的消息留给下次补拉
@@ -80,14 +81,14 @@ export async function runWatch(o: WatchOptions): Promise<number> {
   }
 
   if (timedOut && (o.follow || printed === 0)) {
-    out("TIMEOUT");
+    out(o.json ? JSON.stringify({ type: "timeout" }) : "TIMEOUT");
     return EXIT_TIMEOUT;
   }
   return code;
 }
 
 export async function run(argv: string[]): Promise<number> {
-  const { positionals, flags } = parseArgs(argv, { booleans: ["follow", "mentions-only"] });
+  const { positionals, flags } = parseArgs(argv, { booleans: ["follow", "mentions-only", "json"] });
   const cfg = await resolveAuth();
   if (!cfg) {
     console.error("no config, run: party login or party init --server URL --token T");
@@ -125,6 +126,7 @@ export async function run(argv: string[]): Promise<number> {
     timeoutSec: resolveWatchTimeoutSec(timeout, flags.follow === true),
     follow: flags.follow === true,
     mentionsOnly: flags["mentions-only"] === true,
+    json: flags.json === true,
     onCursor: (c) => saveCursor(channel, c),
   });
 }

@@ -6,10 +6,10 @@ import { fetchMessages, handleRestError } from "../rest";
 import { formatMsg } from "../format";
 import { isSlug, parseNonNegativeIntFlag, parsePositiveIntFlag } from "../validation";
 
-const HISTORY_FLAGS = ["channel", "since", "limit"];
+const HISTORY_FLAGS = ["channel", "since", "limit", "json"];
 
 export async function run(argv: string[]): Promise<number> {
-  const { positionals, flags } = parseArgs(argv);
+  const { positionals, flags } = parseArgs(argv, { booleans: ["json"] });
   const cfg = await resolveAuth();
   if (!cfg) {
     console.error("no config, run: party login or party init --server URL --token T");
@@ -52,7 +52,8 @@ export async function run(argv: string[]): Promise<number> {
       since ?? 0,
       limit ?? 100,
     );
-    for (const m of messages) console.log(formatMsg(m));
+    // --json：每条一行 NDJSON（原始 msg 帧），供 supervisor/工具消费，免 scrape 人类格式
+    for (const m of messages) console.log(flags.json === true ? JSON.stringify(m) : formatMsg(m));
     return 0;
   } catch (e) {
     return handleRestError(e);

@@ -13,15 +13,15 @@ usage: party <command> [args]
 commands:
   login     [--server URL]                          browser sign-in, store account session (human)
   logout                                             clear account session
-  whoami                                             print current identity (hits /api/me)
+  whoami    [--json]                                 print current identity (hits /api/me)
   agent     add <name> [--channel-scope slug]        mint an agent token as yourself (needs login)
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
-  watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow]
+  watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow] [--json]
   serve     [channel|--channel C] --on-mention "<cmd>" [--all]   常驻：每条 @你 的消息跑一次命令（唤醒睡着的 agent）
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
   status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
-  history   [channel|--channel C] [--since seq] [--limit n]
+  history   [channel|--channel C] [--since seq] [--limit n] [--json]
   channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug]
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|all] | remove <channel> --name n | list <channel>
