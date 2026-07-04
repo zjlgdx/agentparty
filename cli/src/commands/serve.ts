@@ -2,12 +2,46 @@
 // 用外部 supervisor 唤醒（wake GOAL 的 session 型那半；有入站 URL 的 runtime 走 webhook）。
 // 复用 client.connect 的自动重连帧流，真正常驻；命令串行执行（一条处理完再下一条，不并发抢跑）。
 import { EXIT_ARCHIVED, EXIT_AUTH, type MsgFrame } from "@agentparty/shared";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { connect } from "../client";
 import { loadCursor, resolveChannel, saveCursor } from "../config";
 import { formatMsg } from "../format";
 import { resolveAuth } from "../oidc-cli";
 import { isSlug } from "../validation";
+
+const PROTOCOL_REMINDER =
+  "被 @ 唤起：需要产出结论时，先用 `party send --reply-to <seq>` 把 final synthesis 发回频道，再 status done；别只回本地。";
+
+// 把一条 @mention 的完整上下文落成 JSON 文件，命令拿路径读——避开 env/stdin 的 shell quoting/注入，
+// 也让 runner 能一次拿全 channel/seq/sender/body/reply_to/protocol_reminder（评审建议）。
+function writeContextFile(frame: MsgFrame, channel: string, self: string): string {
+  const body = frame.kind === "message" ? frame.body : (frame.note ?? "");
+  const path = join(tmpdir(), `agentparty-serve-${channel}-${frame.seq}.json`);
+  writeFileSync(
+    path,
+    JSON.stringify(
+      {
+        channel,
+        seq: frame.seq,
+        sender: frame.sender.name,
+        owner: frame.sender.owner ?? null,
+        kind: frame.kind,
+        body,
+        mentions: frame.mentions,
+        reply_to: frame.seq, // 回这条就 --reply-to 它
+        self,
+        protocol_reminder: PROTOCOL_REMINDER,
+      },
+      null,
+      2,
+    ) + "\n",
+    { mode: 0o600 },
+  );
+  return path;
+}
 
 const SERVE_FLAGS = ["channel", "on-mention", "all"];
 
@@ -24,18 +58,23 @@ export interface ServeOptions {
   out?: (line: string) => void;
 }
 
-// 默认执行器：sh -c <cmd>，消息正文走 stdin，元信息走 AP_* 环境变量；等它退出（串行）。
+// 默认执行器：把上下文写成 context file → sh -c <cmd>（cmd 里的 {file} 替成路径，也放进 AP_CONTEXT_FILE）。
+// 正文仍走 stdin + AP_* env 图省事；context file 是给需要稳健取全量的 runner 用。串行等它退出。
+// 非零退出：打印 exit code + context file 路径（便于排查），并保留文件；成功则清理。
 async function defaultRun(
   frame: MsgFrame,
   ctx: { cmd: string; channel: string; self: string },
 ): Promise<void> {
   const body = frame.kind === "message" ? frame.body : (frame.note ?? "");
-  const proc = Bun.spawn(["sh", "-c", ctx.cmd], {
+  const file = writeContextFile(frame, ctx.channel, ctx.self);
+  const cmd = ctx.cmd.includes("{file}") ? ctx.cmd.replaceAll("{file}", file) : ctx.cmd;
+  const proc = Bun.spawn(["sh", "-c", cmd], {
     stdin: new TextEncoder().encode(body),
     stdout: "inherit",
     stderr: "inherit",
     env: {
       ...process.env,
+      AP_CONTEXT_FILE: file,
       AP_CHANNEL: ctx.channel,
       AP_SEQ: String(frame.seq),
       AP_SENDER: frame.sender.name,
@@ -43,11 +82,19 @@ async function defaultRun(
       AP_BODY: body,
       AP_MENTIONS: frame.mentions.join(","),
       AP_SELF: ctx.self,
-      AP_REPLY_TO: String(frame.seq), // 方便命令用 --reply-to 串起来
+      AP_REPLY_TO: String(frame.seq),
     },
   });
   const code = await proc.exited;
-  if (code !== 0) throw new Error(`command exited ${code}`);
+  if (code !== 0) {
+    // 保留 context file 供排查，抛错让 runServe 打印（不发频道）
+    throw new Error(`command exited ${code} (context: ${file})`);
+  }
+  try {
+    unlinkSync(file);
+  } catch {
+    /* 清理失败无所谓 */
+  }
 }
 
 export async function runServe(o: ServeOptions): Promise<number> {
@@ -117,7 +164,8 @@ export async function run(argv: string[]): Promise<number> {
   const cmd = str(flags["on-mention"]);
   if (!cmd) {
     console.error(
-      'need --on-mention "<command>"：每条 @你 的消息跑一次；正文在 stdin，元信息在 AP_* 环境变量',
+      'need --on-mention "<command>"：每条 @你 的消息跑一次。\n' +
+        "  上下文：命令里的 {file} 替成 context JSON 路径（= AP_CONTEXT_FILE）；正文也在 stdin；元信息在 AP_*。",
     );
     return 1;
   }
