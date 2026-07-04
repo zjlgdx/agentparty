@@ -14,15 +14,19 @@ import {
   WEBHOOK_RETRY_DELAYS_MS,
   WEBHOOK_TIMEOUT_MS,
   type ErrorCode,
+  type CollaborationRole,
   type MsgFrame,
   type PresenceEntry,
   type PresenceFrame,
+  type Residency,
   type SendFrame,
   type Sender,
   type SenderKind,
   type ServerFrame,
   type StatusState,
   type TokenRole,
+  type WakeInfo,
+  type WakeKind,
 } from "@agentparty/shared";
 import { Server, type Connection, type ConnectionContext, type WSMessage } from "partyserver";
 
@@ -63,6 +67,9 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
 export const PRESENCE_SCAN_MS = PRESENCE_TIMEOUT_MS;
 
 const STATUS_STATES: readonly string[] = ["working", "waiting", "blocked", "done"];
+const COLLAB_ROLES: readonly string[] = ["host", "worker", "reviewer", "observer"];
+const RESIDENCIES: readonly string[] = ["supervised", "webhook", "bare", "human_driven", "unknown"];
+const WAKE_KINDS: readonly string[] = ["none", "watch", "serve", "webhook"];
 const MENTION_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const MAX_MENTIONS = 50;
 const MENTIONS_JSON_LIMIT = 4096;
@@ -82,6 +89,31 @@ function parseMentions(input: unknown): string[] | null {
     return null;
   }
   return input as string[];
+}
+
+function parseCollaborationRole(input: unknown): CollaborationRole | undefined | null {
+  if (input === undefined) return undefined;
+  if (typeof input !== "string" || !COLLAB_ROLES.includes(input)) return null;
+  return input as CollaborationRole;
+}
+
+function parseResidency(input: unknown): Residency | undefined | null {
+  if (input === undefined) return undefined;
+  if (typeof input !== "string" || !RESIDENCIES.includes(input)) return null;
+  return input as Residency;
+}
+
+function parseWake(input: unknown): WakeInfo | undefined | null {
+  if (input === undefined) return undefined;
+  if (typeof input !== "object" || input === null) return null;
+  const w = input as Record<string, unknown>;
+  if (typeof w.kind !== "string" || !WAKE_KINDS.includes(w.kind)) return null;
+  if (w.verified_at !== undefined && (typeof w.verified_at !== "number" || !Number.isInteger(w.verified_at))) {
+    return null;
+  }
+  return w.verified_at === undefined
+    ? { kind: w.kind as WakeKind }
+    : { kind: w.kind as WakeKind, verified_at: w.verified_at };
 }
 
 // rest body 与 ws send 帧共用的校验（rest 侧无 type 字段）
@@ -106,7 +138,22 @@ function parseSendFrame(input: unknown): SendFrame | null {
     const note = typeof f.note === "string" ? f.note : "";
     const mentions = parseMentions(f.mentions);
     if (mentions === null) return null;
-    return { type: "send", kind: "status", state: f.state as StatusState, note, mentions };
+    const role = parseCollaborationRole(f.role);
+    if (role === null) return null;
+    const residency = parseResidency(f.residency);
+    if (residency === null) return null;
+    const wake = parseWake(f.wake);
+    if (wake === null) return null;
+    return {
+      type: "send",
+      kind: "status",
+      state: f.state as StatusState,
+      note,
+      mentions,
+      ...(role !== undefined ? { role } : {}),
+      ...(residency !== undefined ? { residency } : {}),
+      ...(wake !== undefined ? { wake } : {}),
+    };
   }
   return null;
 }
@@ -164,8 +211,24 @@ export class ChannelDO extends Server<Env> {
       name TEXT PRIMARY KEY,
       state TEXT NOT NULL,
       note TEXT,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      role TEXT,
+      residency TEXT,
+      wake_kind TEXT,
+      wake_verified_at INTEGER
     )`);
+    for (const ddl of [
+      "ALTER TABLE presence ADD COLUMN role TEXT",
+      "ALTER TABLE presence ADD COLUMN residency TEXT",
+      "ALTER TABLE presence ADD COLUMN wake_kind TEXT",
+      "ALTER TABLE presence ADD COLUMN wake_verified_at INTEGER",
+    ]) {
+      try {
+        sql.exec(ddl);
+      } catch {
+        // 列已存在
+      }
+    }
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -455,7 +518,8 @@ export class ChannelDO extends Server<Env> {
       ts,
     );
     const frame: PresenceFrame = { type: "presence", name, state: "offline", note: null, ts };
-    this.broadcastFrame(frame);
+    const entry = this.presenceFor(name);
+    this.broadcastFrame(entry ? { type: "presence", ...entry } : frame);
   }
 
   // worker 每次转发都会带上频道快照头，do 写 meta 缓存（同 archived 的手法）
@@ -852,15 +916,31 @@ export class ChannelDO extends Server<Env> {
 
     const frames: ServerFrame[] = [msg];
     if (frame.kind === "status") {
+      const wakeProvided = frame.wake !== undefined ? 1 : 0;
       sql.exec(
-        `INSERT INTO presence (name, state, note, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(name) DO UPDATE SET state = excluded.state, note = excluded.note, updated_at = excluded.updated_at`,
+        `INSERT INTO presence (name, state, note, updated_at, role, residency, wake_kind, wake_verified_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+           state = excluded.state,
+           note = excluded.note,
+           updated_at = excluded.updated_at,
+           role = COALESCE(excluded.role, presence.role),
+           residency = COALESCE(excluded.residency, presence.residency),
+           wake_kind = CASE WHEN ? THEN excluded.wake_kind ELSE presence.wake_kind END,
+           wake_verified_at = CASE WHEN ? THEN excluded.wake_verified_at ELSE presence.wake_verified_at END`,
         identity.name,
         frame.state,
         frame.note,
         now,
+        frame.role ?? null,
+        frame.residency ?? null,
+        frame.wake?.kind ?? null,
+        frame.wake?.verified_at ?? null,
+        wakeProvided,
+        wakeProvided,
       );
-      frames.push({ type: "presence", name: identity.name, state: frame.state, note: frame.note, ts: now });
+      const entry = this.presenceFor(identity.name);
+      frames.push(entry ? { type: "presence", ...entry } : { type: "presence", name: identity.name, state: frame.state, note: frame.note, ts: now });
     }
     return { ok: true, seq, frames };
   }
@@ -983,14 +1063,36 @@ export class ChannelDO extends Server<Env> {
 
   private presenceList(): PresenceEntry[] {
     return this.ctx.storage.sql
-      .exec("SELECT name, state, note, updated_at FROM presence ORDER BY name")
+      .exec("SELECT name, state, note, updated_at, role, residency, wake_kind, wake_verified_at FROM presence ORDER BY name")
       .toArray()
-      .map((r) => ({
-        name: String(r.name),
-        state: String(r.state) as PresenceEntry["state"],
-        note: r.note === null ? null : String(r.note),
-        ts: Number(r.updated_at),
-      }));
+      .map((r) => this.presenceRowToEntry(r));
+  }
+
+  private presenceFor(name: string): PresenceEntry | null {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT name, state, note, updated_at, role, residency, wake_kind, wake_verified_at FROM presence WHERE name = ?", name)
+      .toArray();
+    return rows.length > 0 ? this.presenceRowToEntry(rows[0]!) : null;
+  }
+
+  private presenceRowToEntry(r: Record<string, unknown>): PresenceEntry {
+    const ts = Number(r.updated_at);
+    const wake =
+      r.wake_kind === null || r.wake_kind === undefined
+        ? undefined
+        : r.wake_verified_at === null || r.wake_verified_at === undefined
+          ? { kind: String(r.wake_kind) as WakeKind }
+          : { kind: String(r.wake_kind) as WakeKind, verified_at: Number(r.wake_verified_at) };
+    return {
+      name: String(r.name),
+      state: String(r.state) as PresenceEntry["state"],
+      note: r.note === null ? null : String(r.note),
+      ts,
+      last_seen: ts,
+      ...(r.role === null || r.role === undefined ? {} : { role: String(r.role) as CollaborationRole }),
+      ...(r.residency === null || r.residency === undefined ? {} : { residency: String(r.residency) as Residency }),
+      ...(wake === undefined ? {} : { wake }),
+    };
   }
 
   private rowToFrame(r: Record<string, unknown>): MsgFrame {

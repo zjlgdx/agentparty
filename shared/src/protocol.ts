@@ -39,6 +39,14 @@ export type WebhookFilter = "mentions" | "all";
 
 export type StatusState = "working" | "waiting" | "blocked" | "done";
 export type PresenceState = StatusState | "offline";
+export type CollaborationRole = "host" | "worker" | "reviewer" | "observer";
+export type Residency = "supervised" | "webhook" | "bare" | "human_driven" | "unknown";
+export type WakeKind = "none" | "watch" | "serve" | "webhook";
+
+export interface WakeInfo {
+  kind: WakeKind;
+  verified_at?: number;
+}
 
 export type ErrorCode =
   | "bad_request"
@@ -63,6 +71,10 @@ export interface PresenceEntry {
   state: PresenceState;
   note: string | null;
   ts: number;
+  last_seen?: number;
+  role?: CollaborationRole;
+  residency?: Residency;
+  wake?: WakeInfo;
 }
 
 // ---- 客户端 → 服务端帧 ----
@@ -86,6 +98,9 @@ export interface SendStatusFrame {
   state: StatusState;
   note: string;
   mentions?: string[];
+  role?: CollaborationRole;
+  residency?: Residency;
+  wake?: WakeInfo;
 }
 
 export type SendFrame = SendMessageFrame | SendStatusFrame;
@@ -139,6 +154,10 @@ export interface PresenceFrame {
   state: PresenceState;
   note: string | null;
   ts: number;
+  last_seen?: number;
+  role?: CollaborationRole;
+  residency?: Residency;
+  wake?: WakeInfo;
 }
 
 export interface ErrorFrame {

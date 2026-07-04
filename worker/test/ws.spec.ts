@@ -104,6 +104,9 @@ describe("websocket", () => {
       state: "working",
       note: "changing api signature",
       mentions: [human.name],
+      role: "worker",
+      residency: "supervised",
+      wake: { kind: "serve", verified_at: 123 },
     });
     const sent = await worker.nextOfType("sent");
     expect(sent.seq).toBe(1);
@@ -117,19 +120,53 @@ describe("websocket", () => {
       mentions: [human.name],
     });
     const presence = await watcher.nextOfType("presence");
-    expect(presence).toMatchObject({ name: agent.name, state: "working", note: "changing api signature" });
+    expect(presence).toMatchObject({
+      name: agent.name,
+      state: "working",
+      note: "changing api signature",
+      role: "worker",
+      residency: "supervised",
+      wake: { kind: "serve", verified_at: 123 },
+    });
+
+    worker.send({
+      type: "send",
+      kind: "status",
+      state: "working",
+      note: "switching wake layer",
+      mentions: [],
+      wake: { kind: "none" },
+    });
+    const secondSent = await worker.nextOfType("sent");
+    expect(secondSent.seq).toBe(2);
+    await watcher.nextOfType("msg");
+    const changedWake = await watcher.nextOfType("presence");
+    expect(changedWake).toMatchObject({
+      name: agent.name,
+      state: "working",
+      role: "worker",
+      residency: "supervised",
+      wake: { kind: "none" },
+    });
+    expect(changedWake.wake).not.toHaveProperty("verified_at");
 
     const rejoin = await WsClient.open(slug, human.token);
     const welcome = await rejoin.nextOfType("welcome");
-    expect(welcome.last_seq).toBe(1);
+    expect(welcome.last_seq).toBe(2);
     expect(welcome.presence).toContainEqual(
-      expect.objectContaining({ name: agent.name, state: "working" }),
+      expect.objectContaining({
+        name: agent.name,
+        state: "working",
+        role: "worker",
+        residency: "supervised",
+        wake: { kind: "none" },
+      }),
     );
     const history = await SELF.fetch(`http://local/api/channels/${slug}/messages`, {
       headers: { authorization: `Bearer ${human.token}` },
     });
     expect((await history.json()) as unknown).toMatchObject({
-      messages: [expect.objectContaining({ kind: "status", mentions: [human.name] })],
+      messages: expect.arrayContaining([expect.objectContaining({ kind: "status", mentions: [human.name] })]),
     });
     watcher.close();
     worker.close();

@@ -574,6 +574,48 @@ describe("party status/history channel flag", () => {
     });
   });
 
+  test("status forwards structured role residency and wake kind", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    const r = await runCli([
+      "status",
+      "dev",
+      "working",
+      "-m",
+      "coordinating",
+      "--role",
+      "host",
+      "--residency",
+      "human_driven",
+      "--wake-kind",
+      "none",
+    ]);
+    expect(r.code).toBe(0);
+    const req = reqsOf(mock, "POST", "/api/channels/dev/messages")[0]!;
+    expect(req.body).toMatchObject({
+      kind: "status",
+      state: "working",
+      note: "coordinating",
+      role: "host",
+      residency: "human_driven",
+      wake: { kind: "none" },
+    });
+  });
+
+  test("status rejects invalid collaboration role fields locally", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    for (const args of [
+      ["status", "dev", "working", "--role", "agent"],
+      ["status", "dev", "working", "--residency", "resident"],
+      ["status", "dev", "working", "--wake-kind", "poll"],
+    ]) {
+      const r = await runCli(args);
+      expect(r.code).toBe(1);
+    }
+    expect(mock.requests.length).toBe(0);
+  });
+
   test("status -m 后接 flag 退出 1 且不发请求", async () => {
     mock = startRestMock();
     writeCfg(mock.url);
