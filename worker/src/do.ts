@@ -1,6 +1,8 @@
 // channel durable object — seq 分配 / 广播 / presence / 补拉 / 各类熔断 / webhook 投递 / temp 归档
 import {
   BODY_LIMIT,
+  LOOP_GUARD_AGENT_N,
+  LOOP_GUARD_AGENT_PARTY_N,
   LOOP_GUARD_N,
   LOOP_GUARD_PARTY_N,
   MAX_WEBHOOKS_PER_CHANNEL,
@@ -397,7 +399,7 @@ export class ChannelDO extends Server<Env> {
       connection.close(1008, "archived");
       return;
     }
-    const loopGuard = this.loopGuardMessage();
+    const loopGuard = state.kind === "agent" ? this.loopGuardMessage(state.name) : this.globalLoopGuardMessage();
     this.sendFrame(connection, {
       type: "welcome",
       channel: this.name,
@@ -1067,7 +1069,7 @@ export class ChannelDO extends Server<Env> {
       return Response.json({ ok: true });
     }
     if (url.pathname === "/internal/reset-guard" && request.method === "POST") {
-      this.setMeta("agent_streak", "0");
+      this.clearLoopGuardState();
       return Response.json({ ok: true });
     }
     if (url.pathname === "/internal/archive" && request.method === "POST") {
@@ -1114,8 +1116,9 @@ export class ChannelDO extends Server<Env> {
     if (byteLength(payload) > BODY_LIMIT) {
       return { ok: false, code: "too_large", message: `body exceeds ${BODY_LIMIT} bytes` };
     }
-    const loopGuard = identity.kind === "agent" ? this.loopGuardMessage() : null;
+    const loopGuard = identity.kind === "agent" ? this.loopGuardMessage(identity.name) : null;
     if (loopGuard !== null) {
+      this.alertLoopGuard(loopGuard);
       return {
         ok: false,
         code: "loop_guard",
@@ -1193,7 +1196,12 @@ export class ChannelDO extends Server<Env> {
       status?.blocked_reason ?? null,
       now,
     );
-    this.setMeta("agent_streak", String(identity.kind === "agent" ? this.agentStreak() + 1 : 0));
+    if (identity.kind === "agent") {
+      this.setMeta("agent_streak", String(this.agentStreak() + 1));
+      this.setMeta(this.agentCountKey(identity.name), String(this.agentCount(identity.name) + 1));
+    } else {
+      this.clearLoopGuardState();
+    }
     if (seq % 100 === 0) {
       sql.exec("DELETE FROM messages WHERE seq <= ?", seq - RETAIN_N);
     }
@@ -1322,12 +1330,41 @@ export class ChannelDO extends Server<Env> {
     return Number(this.getMeta("agent_streak") ?? "0");
   }
 
-  private loopGuardMessage(): string | null {
+  private agentCount(name: string): number {
+    return Number(this.getMeta(this.agentCountKey(name)) ?? "0");
+  }
+
+  private agentCountKey(name: string): string {
+    return `agent_count:${name}`;
+  }
+
+  private globalLoopGuardMessage(): string | null {
     // loop guard 分档（spec §3）：party 频道放宽到 200，阈值按 meta 缓存的 mode 选
     const guardLimit = this.getMeta("mode") === "party" ? LOOP_GUARD_PARTY_N : LOOP_GUARD_N;
     return this.agentStreak() >= guardLimit
       ? `${guardLimit} consecutive agent messages, waiting for a human`
       : null;
+  }
+
+  private loopGuardMessage(agentName: string): string | null {
+    const global = this.globalLoopGuardMessage();
+    if (global !== null) return global;
+    const guardLimit = this.getMeta("mode") === "party" ? LOOP_GUARD_AGENT_PARTY_N : LOOP_GUARD_AGENT_N;
+    return this.agentCount(agentName) >= guardLimit
+      ? `${agentName} reached its ${guardLimit}-message fair-share budget since the last human message; another agent can continue, or a human/reset can clear it`
+      : null;
+  }
+
+  private clearLoopGuardState() {
+    this.setMeta("agent_streak", "0");
+    this.ctx.storage.sql.exec("DELETE FROM meta WHERE substr(key, 1, 12) = 'agent_count:'");
+    this.deleteMeta("loop_guard_alerted");
+  }
+
+  private alertLoopGuard(message: string) {
+    if (this.getMeta("loop_guard_alerted") !== null) return;
+    this.setMeta("loop_guard_alerted", "1");
+    this.insertSystemStatus(`loop guard tripped: ${message}`, Date.now());
   }
 
   private isArchived(): boolean {

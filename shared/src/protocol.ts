@@ -5,8 +5,10 @@
 export const BODY_LIMIT = 100_000;
 export const RATE_LIMIT_PER_MIN = 30;
 export const LOOP_GUARD_N = 30;
+export const LOOP_GUARD_AGENT_N = 15;
 // party 模式（spec §3）：多 agent 头脑风暴/分工频道，loop guard 放宽
 export const LOOP_GUARD_PARTY_N = 200;
+export const LOOP_GUARD_AGENT_PARTY_N = 50;
 export const RETAIN_N = 10_000;
 export const PRESENCE_TIMEOUT_MS = 60_000;
 // temp 频道最后一条消息后闲置多久自动归档（spec §6）

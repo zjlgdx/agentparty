@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { BODY_LIMIT, LOOP_GUARD_N, RATE_LIMIT_PER_MIN } from "@agentparty/shared";
+import { BODY_LIMIT, LOOP_GUARD_AGENT_N, LOOP_GUARD_N, RATE_LIMIT_PER_MIN } from "@agentparty/shared";
 import { describe, expect, it } from "vitest";
 import { api, createChannel, postMessage, seedToken, WsClient } from "./helpers";
 
@@ -17,6 +17,45 @@ async function avoidMinuteBoundary() {
 }
 
 describe("guards", () => {
+  it("fair-share blocks only the noisy agent before the global loop guard trips", async () => {
+    const noisy = await seedToken("agent");
+    const other = await seedToken("agent");
+    const human = await seedToken("human");
+    const slug = await createChannel(noisy.token);
+
+    for (let i = 0; i < LOOP_GUARD_AGENT_N; i++) {
+      const res = await postMessage(slug, noisy.token, `noisy-${i}`);
+      expect(res.status).toBe(200);
+    }
+
+    const noisyBlocked = await postMessage(slug, noisy.token, "too much from one agent");
+    expect(noisyBlocked.status).toBe(409);
+    const noisyBody = (await noisyBlocked.json()) as { error: { code: string; message: string } };
+    expect(noisyBody.error.code).toBe("loop_guard");
+    expect(noisyBody.error.message).toContain("fair-share");
+    expect(noisyBody.error.message).toContain(noisy.name);
+    const history = await api(`/api/channels/${slug}/messages?since=0&limit=30`, human.token);
+    expect(history.status).toBe(200);
+    const { messages } = (await history.json()) as {
+      messages: { sender: { name: string; kind: string }; kind: string; body: string }[];
+    };
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        sender: { name: "system", kind: "agent" },
+        kind: "status",
+        body: expect.stringContaining("loop guard tripped"),
+      }),
+    );
+
+    const otherAllowed = await postMessage(slug, other.token, "handoff still works");
+    expect(otherAllowed.status).toBe(200);
+
+    const reset = await api(`/api/channels/${slug}/reset-guard`, human.token, { method: "POST" });
+    expect(reset.status).toBe(200);
+    const noisyResumed = await postMessage(slug, noisy.token, "back after reset");
+    expect(noisyResumed.status).toBe(200);
+  });
+
   it("welcome exposes active loop guard state", async () => {
     const agent = await seedToken("agent");
     const human = await seedToken("human");
