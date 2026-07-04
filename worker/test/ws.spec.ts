@@ -1,7 +1,7 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { ChannelDO } from "../src/do";
-import { ADMIN_HEADERS, WsClient, createChannel, seedToken } from "./helpers";
+import { ADMIN_HEADERS, WsClient, api, createChannel, seedToken } from "./helpers";
 
 describe("websocket", () => {
   it("welcomes with channel, self, participants and last_seq", async () => {
@@ -173,6 +173,13 @@ describe("websocket", () => {
         expires_at: 4_200_000,
         handoff_to: human.name,
       },
+      workflow: {
+        workflow_id: "wf-review",
+        kind: "orchestrator-workers",
+        run_id: "run-1",
+        step_id: "review",
+        parent_summary_seq: 7,
+      },
     });
     const sent = await worker.nextOfType("sent");
     expect(sent.seq).toBe(1);
@@ -205,6 +212,13 @@ describe("websocket", () => {
           expires_at: 4_200_000,
           handoff_to: human.name,
         },
+        workflow: {
+          workflow_id: "wf-review",
+          kind: "orchestrator-workers",
+          run_id: "run-1",
+          step_id: "review",
+          parent_summary_seq: 7,
+        },
       },
     });
     const presence = await watcher.nextOfType("presence");
@@ -225,6 +239,13 @@ describe("websocket", () => {
           next: "human reviewer owns approval",
           expires_at: 4_200_000,
           handoff_to: human.name,
+        },
+        workflow: {
+          workflow_id: "wf-review",
+          kind: "orchestrator-workers",
+          run_id: "run-1",
+          step_id: "review",
+          parent_summary_seq: 7,
         },
       },
       role: "worker",
@@ -319,6 +340,13 @@ describe("websocket", () => {
               owner: agent.name,
               handoff_to: human.name,
             }),
+            workflow: {
+              workflow_id: "wf-review",
+              kind: "orchestrator-workers",
+              run_id: "run-1",
+              step_id: "review",
+              parent_summary_seq: 7,
+            },
           }),
         }),
       ]),
@@ -326,6 +354,21 @@ describe("websocket", () => {
     watcher.close();
     worker.close();
     rejoin.close();
+  });
+
+  it("rejects invalid workflow metadata on status frames", async () => {
+    const { token } = await seedToken("agent");
+    const slug = await createChannel(token);
+    const res = await api(`/api/channels/${slug}/messages`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "status",
+        state: "working",
+        note: "bad workflow",
+        workflow: { workflow_id: "wf", kind: "airflow" },
+      }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("readonly send gets error unauthorized", async () => {

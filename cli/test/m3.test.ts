@@ -621,6 +621,16 @@ describe("party status/history channel flag", () => {
       "4200000",
       "--handoff-to",
       "reviewer-1",
+      "--workflow-id",
+      "wf-release",
+      "--workflow-kind",
+      "orchestrator-workers",
+      "--workflow-run",
+      "run-1",
+      "--workflow-step",
+      "review",
+      "--workflow-parent-summary-seq",
+      "99",
     ]);
     expect(r.code).toBe(0);
     const req = reqsOf(mock, "POST", "/api/channels/dev/messages")[0]!;
@@ -637,6 +647,13 @@ describe("party status/history channel flag", () => {
         next: "reviewer signs off",
         expires_at: 4200000,
         handoff_to: "reviewer-1",
+      },
+      workflow: {
+        workflow_id: "wf-release",
+        kind: "orchestrator-workers",
+        run_id: "run-1",
+        step_id: "review",
+        parent_summary_seq: 99,
       },
       context: {
         config_kind: "global",
@@ -671,6 +688,11 @@ describe("party status/history channel flag", () => {
       ["status", "dev", "working", "--decision-kind", "handoff"],
       ["status", "dev", "working", "--decision", "handoff", "--handoff-to", "bad name"],
       ["status", "dev", "working", "--decision", "takeover", "--takeover-from", "bad name"],
+      ["status", "dev", "working", "--workflow-id", "wf"],
+      ["status", "dev", "working", "--workflow-kind", "parallel"],
+      ["status", "dev", "working", "--workflow-id", "bad id", "--workflow-kind", "parallel"],
+      ["status", "dev", "working", "--workflow-id", "wf", "--workflow-kind", "airflow"],
+      ["status", "dev", "working", "--workflow-id", "wf", "--workflow-kind", "parallel", "--workflow-parent-summary-seq", "0"],
     ]) {
       const r = await runCli(args);
       expect(r.code).toBe(1);
@@ -809,6 +831,13 @@ describe("party status/history channel flag", () => {
                 summary_seq: null,
                 blocked_reason: "need token",
                 updated_at: 11000,
+                workflow: {
+                  workflow_id: "wf-worker",
+                  kind: "parallel",
+                  run_id: "run-1",
+                  step_id: "worker-b",
+                  parent_summary_seq: 9,
+                },
               },
               ts: 11000,
             },
@@ -851,8 +880,8 @@ describe("party status/history channel flag", () => {
     const frame = JSON.parse(r.stdout.trim()) as {
       type: string;
       hosts: Array<{ name: string; lease: string; stale_reason: string | null }>;
-      open_claims: Array<{ owner: string; state: string; scope: string[] }>;
-      blockers: Array<{ owner: string; blocked_reason: string | null }>;
+      open_claims: Array<{ owner: string; state: string; scope: string[]; workflow: { workflow_id: string } | null }>;
+      blockers: Array<{ owner: string; blocked_reason: string | null; workflow: { workflow_id: string } | null }>;
       decisions: Array<{ owner: string; kind: string; handoff_to: string | null }>;
     };
     expect(frame.type).toBe("host_board");
@@ -862,10 +891,21 @@ describe("party status/history channel flag", () => {
     ]);
     expect(frame.open_claims).toEqual([
       expect.objectContaining({ owner: "host-a", state: "working", scope: [] }),
-      expect.objectContaining({ owner: "worker-b", state: "blocked", scope: ["worker/src"] }),
+      expect.objectContaining({
+        owner: "worker-b",
+        state: "blocked",
+        scope: ["worker/src"],
+        workflow: expect.objectContaining({ workflow_id: "wf-worker" }),
+      }),
       expect.objectContaining({ owner: "worker-a", state: "working", scope: ["web/src"] }),
     ]);
-    expect(frame.blockers).toEqual([expect.objectContaining({ owner: "worker-b", blocked_reason: "need token" })]);
+    expect(frame.blockers).toEqual([
+      expect.objectContaining({
+        owner: "worker-b",
+        blocked_reason: "need token",
+        workflow: expect.objectContaining({ workflow_id: "wf-worker" }),
+      }),
+    ]);
     expect(frame.decisions).toEqual([
       expect.objectContaining({ owner: "host-a", kind: "handoff", handoff_to: "reviewer-1" }),
     ]);

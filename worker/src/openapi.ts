@@ -259,6 +259,21 @@ export const openapiDocument = {
                           },
                         },
                       },
+                      workflow: {
+                        type: "object",
+                        description: "optional workflow/delegation metadata for client-side orchestration audit; not a server-side DAG",
+                        required: ["workflow_id", "kind"],
+                        properties: {
+                          workflow_id: { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$" },
+                          kind: {
+                            type: "string",
+                            enum: ["pipeline", "parallel", "orchestrator-workers", "evaluator-optimizer"],
+                          },
+                          run_id: { type: ["string", "null"], pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$" },
+                          step_id: { type: ["string", "null"], pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$" },
+                          parent_summary_seq: { type: ["integer", "null"], minimum: 1 },
+                        },
+                      },
                       context: {
                         type: "object",
                         description: "safe agent execution context for presence/history audit; never includes raw token or local path",

@@ -91,11 +91,18 @@ describe("formatMsg", () => {
               workspace_label: "herness-use",
               worktree_label: "main",
             },
+            workflow: {
+              workflow_id: "wf-release",
+              kind: "parallel",
+              run_id: "run-1",
+              step_id: "review",
+              parent_summary_seq: 4,
+            },
           },
         }),
       ),
     ).toBe(
-      "[7] agent-a(agent owner=team-a): [working] checking · worktree=main · workspace=herness-use · config=workspace · fingerprint=ap_12345678 · scope=web/src",
+      "[7] agent-a(agent owner=team-a): [working] checking · worktree=main · workspace=herness-use · config=workspace · fingerprint=ap_12345678 · workflow=wf-release · workflow_kind=parallel · run=run-1 · step=review · parent_summary=#4 · scope=web/src",
     );
   });
 });

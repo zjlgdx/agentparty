@@ -45,6 +45,21 @@ describe("channel state", () => {
       state: "working",
       note: "checking",
       ts: 1_725_000_000_000,
+      status: {
+        owner: "child-a",
+        state: "working",
+        scope: ["web/src"],
+        summary_seq: null,
+        blocked_reason: null,
+        updated_at: 1_725_000_000_000,
+        workflow: {
+          workflow_id: "wf-ui",
+          kind: "parallel",
+          run_id: "run-1",
+          step_id: "render",
+          parent_summary_seq: 4,
+        },
+      },
       lineage: {
         parent_agent: "parent-a",
         root_agent: "parent-a",
@@ -56,5 +71,6 @@ describe("channel state", () => {
     const next = channelReducer(initialChannelState, { type: "frame", frame });
 
     expect(next.presence["child-a"]?.lineage).toEqual(frame.lineage);
+    expect(next.presence["child-a"]?.status?.workflow).toEqual(frame.status?.workflow);
   });
 });

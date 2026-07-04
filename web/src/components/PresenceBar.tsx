@@ -27,6 +27,7 @@ interface Item {
   wakeVerifiedAt: number | null;
   context: PresenceEntry["context"] | null;
   lineage: NonNullable<PresenceEntry["lineage"]> | null;
+  workflow: NonNullable<NonNullable<PresenceEntry["status"]>["workflow"]> | null;
   owner: string | null; // 所属人：agent 的操作者 / 人类的 email，仅连接中的参与者可知
 }
 
@@ -90,6 +91,7 @@ export function PresenceBar({ presence, participants, status, party = false, isP
       wakeVerifiedAt: entry?.wake?.verified_at ?? null,
       context: entry?.context ?? null,
       lineage: entry?.lineage ?? sender?.lineage ?? null,
+      workflow: entry?.status?.workflow ?? null,
     };
     if (!connected) {
       return { name, state: "offline", note: null, ts: entry?.ts ?? null, owner: null, ...meta };
@@ -126,6 +128,11 @@ export function PresenceBar({ presence, participants, status, party = false, isP
           it.lineage !== null ? `team: ${it.lineage.team_id}` : null,
           it.lineage !== null ? `depth: ${it.lineage.depth}` : null,
           it.lineage?.expires_at ? `expires: ${fmtRel(it.lineage.expires_at)}` : null,
+          it.workflow !== null ? `workflow: ${it.workflow.workflow_id}` : null,
+          it.workflow !== null ? `workflow kind: ${it.workflow.kind}` : null,
+          it.workflow?.run_id ? `workflow run: ${it.workflow.run_id}` : null,
+          it.workflow?.step_id ? `workflow step: ${it.workflow.step_id}` : null,
+          it.workflow?.parent_summary_seq ? `parent summary: #${it.workflow.parent_summary_seq}` : null,
           it.lastSeen !== null ? `last seen: ${fmtRel(it.lastSeen)}` : null,
         ].filter((part): part is string => part !== null);
         return (
@@ -163,6 +170,7 @@ export function PresenceBar({ presence, participants, status, party = false, isP
             {it.context?.config_kind !== undefined && (
               <span className="t-mono presence-context">cfg:{it.context.config_kind}</span>
             )}
+            {it.workflow !== null && <span className="t-mono presence-context">wf:{it.workflow.workflow_id}</span>}
             {it.note !== null && it.note !== "" && <span className="t-mono presence-note">{it.note}</span>}
             {it.ts !== null && <span className="t-mono presence-ts">{fmtRel(it.ts)}</span>}
           </span>

@@ -5,8 +5,10 @@ import type {
   HostDecisionKind,
   Residency,
   SendHostDecision,
+  SendStatusWorkflow,
   StatusState,
   WakeKind,
+  WorkflowKind,
 } from "@agentparty/shared";
 import { isHelpArg, parseArgs, str, strArray, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel, saveCursor, workspaceId, workspaceLabel, worktreeLabel } from "../config";
@@ -19,6 +21,8 @@ const COLLAB_ROLES: CollaborationRole[] = ["host", "worker", "reviewer", "observ
 const RESIDENCIES: Residency[] = ["supervised", "webhook", "bare", "human_driven", "unknown"];
 const WAKE_KINDS: WakeKind[] = ["none", "watch", "serve", "webhook"];
 const DECISION_KINDS: HostDecisionKind[] = ["decision", "handoff", "takeover"];
+const WORKFLOW_KINDS: WorkflowKind[] = ["pipeline", "parallel", "orchestrator-workers", "evaluator-optimizer"];
+const WORKFLOW_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const STATUS_FLAGS = [
   "channel",
   "note",
@@ -35,6 +39,11 @@ const STATUS_FLAGS = [
   "expires-at",
   "handoff-to",
   "takeover-from",
+  "workflow-id",
+  "workflow-kind",
+  "workflow-run",
+  "workflow-step",
+  "workflow-parent-summary-seq",
   "debug-auth",
 ];
 const HELP = `usage: party status [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]... [--debug-auth]
@@ -61,6 +70,15 @@ Options:
                    agent taking over host/coordinator work
   --takeover-from name
                    stale host/coordinator being superseded
+  --workflow-id id workflow/delegation graph id
+  --workflow-kind k
+                   workflow type: pipeline|parallel|orchestrator-workers|evaluator-optimizer
+  --workflow-run id
+                   workflow run id
+  --workflow-step id
+                   workflow step id
+  --workflow-parent-summary-seq N
+                   parent summary/status seq this workflow status refines
   --debug-auth     print resolved auth/config source to stderr`;
 
 function buildContext(auth: Awaited<ReturnType<typeof resolveAuthDetailed>>): AgentContext {
@@ -72,6 +90,10 @@ function buildContext(auth: Awaited<ReturnType<typeof resolveAuthDetailed>>): Ag
     workspace_label: workspaceLabel(),
     ...(wt !== undefined ? { worktree_label: wt } : {}),
   };
+}
+
+function validWorkflowId(value: string): boolean {
+  return WORKFLOW_ID_RE.test(value);
 }
 
 export async function run(argv: string[]): Promise<number> {
@@ -112,6 +134,11 @@ export async function run(argv: string[]): Promise<number> {
       "expires-at",
       "handoff-to",
       "takeover-from",
+      "workflow-id",
+      "workflow-kind",
+      "workflow-run",
+      "workflow-step",
+      "workflow-parent-summary-seq",
     ],
     ["mention", "scope"],
   );
@@ -216,6 +243,51 @@ export async function run(argv: string[]): Promise<number> {
           ...(handoffTo !== undefined ? { handoff_to: handoffTo } : {}),
           ...(takeoverFrom !== undefined ? { takeover_from: takeoverFrom } : {}),
         };
+  const workflowId = str(flags["workflow-id"]);
+  const workflowKind = str(flags["workflow-kind"]);
+  const workflowRun = str(flags["workflow-run"]);
+  const workflowStep = str(flags["workflow-step"]);
+  const workflowParentSummarySeq = parsePositiveIntFlag(str(flags["workflow-parent-summary-seq"]), "workflow-parent-summary-seq");
+  if (typeof workflowParentSummarySeq === "string") {
+    console.error(workflowParentSummarySeq);
+    return 1;
+  }
+  const workflowFlagUsed =
+    workflowId !== undefined ||
+    workflowKind !== undefined ||
+    workflowRun !== undefined ||
+    workflowStep !== undefined ||
+    workflowParentSummarySeq !== undefined;
+  if (workflowFlagUsed && (workflowId === undefined || workflowKind === undefined)) {
+    console.error("--workflow-id and --workflow-kind are required when using workflow metadata flags");
+    return 1;
+  }
+  if (workflowId !== undefined && !validWorkflowId(workflowId)) {
+    console.error("--workflow-id must match [a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}");
+    return 1;
+  }
+  if (workflowKind !== undefined && !WORKFLOW_KINDS.includes(workflowKind as WorkflowKind)) {
+    console.error(`--workflow-kind must be one of: ${WORKFLOW_KINDS.join("|")}`);
+    return 1;
+  }
+  if (workflowRun !== undefined && !validWorkflowId(workflowRun)) {
+    console.error("--workflow-run must match [a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}");
+    return 1;
+  }
+  if (workflowStep !== undefined && !validWorkflowId(workflowStep)) {
+    console.error("--workflow-step must match [a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}");
+    return 1;
+  }
+  const workflow: SendStatusWorkflow | undefined =
+    workflowId === undefined || workflowKind === undefined
+      ? undefined
+      : {
+          workflow_id: workflowId,
+          kind: workflowKind as WorkflowKind,
+          ...(workflowRun !== undefined ? { run_id: workflowRun } : {}),
+          ...(workflowStep !== undefined ? { step_id: workflowStep } : {}),
+          ...(workflowParentSummarySeq !== undefined ? { parent_summary_seq: workflowParentSummarySeq } : {}),
+        };
   try {
     if (flags["debug-auth"] === true || process.env.AGENTPARTY_DEBUG_AUTH === "1") {
       try {
@@ -237,6 +309,7 @@ export async function run(argv: string[]): Promise<number> {
       ...(residency !== undefined ? { residency: residency as Residency } : {}),
       ...(wakeKind !== undefined ? { wake: { kind: wakeKind as WakeKind } } : {}),
       ...(decision !== undefined ? { decision } : {}),
+      ...(workflow !== undefined ? { workflow } : {}),
       context: buildContext(auth),
     });
     saveCursor(channel, seq);

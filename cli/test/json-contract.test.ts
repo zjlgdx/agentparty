@@ -142,6 +142,13 @@ describe("json contract fixtures", () => {
                 summary_seq: 1,
                 blocked_reason: null,
                 updated_at: Date.now(),
+                workflow: {
+                  workflow_id: "wf-release",
+                  kind: "pipeline",
+                  run_id: "run-1",
+                  step_id: "build",
+                  parent_summary_seq: 1,
+                },
               },
               ts: Date.now(),
             },

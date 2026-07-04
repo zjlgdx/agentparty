@@ -47,6 +47,7 @@ export type CollaborationRoleSource = "self" | "assigned";
 export type Residency = "supervised" | "webhook" | "bare" | "human_driven" | "unknown";
 export type WakeKind = "none" | "watch" | "serve" | "webhook";
 export type HostDecisionKind = "decision" | "handoff" | "takeover";
+export type WorkflowKind = "pipeline" | "parallel" | "orchestrator-workers" | "evaluator-optimizer";
 
 export interface WakeInfo {
   kind: WakeKind;
@@ -70,6 +71,22 @@ export interface SendHostDecision {
   expires_at?: number | null;
   handoff_to?: string | null;
   takeover_from?: string | null;
+}
+
+export interface StatusWorkflow {
+  workflow_id: string;
+  kind: WorkflowKind;
+  run_id: string | null;
+  step_id: string | null;
+  parent_summary_seq: number | null;
+}
+
+export interface SendStatusWorkflow {
+  workflow_id: string;
+  kind: WorkflowKind;
+  run_id?: string | null;
+  step_id?: string | null;
+  parent_summary_seq?: number | null;
 }
 
 export type ConfigSourceKind = "explicit" | "workspace" | "global" | "none";
@@ -198,6 +215,7 @@ export interface SendStatusFrame {
   wake?: WakeInfo;
   context?: AgentContext;
   decision?: SendHostDecision;
+  workflow?: SendStatusWorkflow;
 }
 
 export type SendFrame = SendMessageFrame | SendStatusFrame;
@@ -238,6 +256,7 @@ export interface StatusEvent {
   updated_at: number;
   context?: AgentContext;
   decision?: HostDecision;
+  workflow?: StatusWorkflow;
 }
 
 export interface CompletionArtifact {

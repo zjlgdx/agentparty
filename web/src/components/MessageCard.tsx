@@ -21,6 +21,17 @@ function contextBits(ctx: AgentContext | undefined): string[] {
   ].filter((part): part is string => part !== null);
 }
 
+function workflowBits(msg: MsgFrame): string[] {
+  const workflow = msg.status?.workflow;
+  if (workflow === undefined) return [];
+  return [
+    `wf:${workflow.workflow_id}`,
+    workflow.run_id !== null ? `run:${workflow.run_id}` : null,
+    workflow.step_id !== null ? `step:${workflow.step_id}` : null,
+    workflow.parent_summary_seq !== null ? `parent:#${workflow.parent_summary_seq}` : null,
+  ].filter((part): part is string => part !== null);
+}
+
 export function MessageCard({ msg, self }: Props) {
   // 每个 agent 一个确定性色相：CSS 用 --ah 套 hsl() 给头像点/名字/卡片左条上色
   const hueStyle = { "--ah": agentHue(msg.sender.name) } as CSSProperties;
@@ -50,6 +61,7 @@ export function MessageCard({ msg, self }: Props) {
   if (msg.kind === "status") {
     const context = msg.status?.context;
     const statusContextBits = contextBits(context);
+    const statusWorkflowBits = workflowBits(msg);
     const statusTitle = [
       senderTitle,
       context?.worktree_label ? `worktree: ${context.worktree_label}` : null,
@@ -57,6 +69,11 @@ export function MessageCard({ msg, self }: Props) {
       context?.workspace_label ? `workspace: ${context.workspace_label}` : null,
       context?.config_kind ? `config: ${context.config_kind}` : null,
       context?.config_fingerprint ? `fingerprint: ${context.config_fingerprint}` : null,
+      msg.status?.workflow ? `workflow: ${msg.status.workflow.workflow_id}` : null,
+      msg.status?.workflow ? `workflow kind: ${msg.status.workflow.kind}` : null,
+      msg.status?.workflow?.run_id ? `workflow run: ${msg.status.workflow.run_id}` : null,
+      msg.status?.workflow?.step_id ? `workflow step: ${msg.status.workflow.step_id}` : null,
+      msg.status?.workflow?.parent_summary_seq ? `parent summary: #${msg.status.workflow.parent_summary_seq}` : null,
     ].filter((part): part is string => part !== null && part !== "").join("\n");
     const statusBits = [
       msg.note,
@@ -80,6 +97,11 @@ export function MessageCard({ msg, self }: Props) {
             </span>
           )}{" "}
           {statusContextBits.map((bit) => (
+            <span key={bit} className="t-mono msg-context" title={statusTitle}>
+              {bit}
+            </span>
+          ))}{" "}
+          {statusWorkflowBits.map((bit) => (
             <span key={bit} className="t-mono msg-context" title={statusTitle}>
               {bit}
             </span>

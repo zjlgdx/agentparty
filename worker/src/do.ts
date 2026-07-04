@@ -30,16 +30,19 @@ import {
   type Residency,
   type SendHostDecision,
   type SendFrame,
+  type SendStatusWorkflow,
   type SearchHit,
   type Sender,
   type SenderKind,
   type ServerFrame,
   type StatusEvent,
   type StatusState,
+  type StatusWorkflow,
   type TokenRole,
   type WakeInfo,
   type WakeKind,
   type WebhookFilter,
+  type WorkflowKind,
 } from "@agentparty/shared";
 import { Server, type Connection, type ConnectionContext, type WSMessage } from "partyserver";
 
@@ -97,12 +100,15 @@ const ROLE_SOURCES: readonly string[] = ["self", "assigned"];
 const RESIDENCIES: readonly string[] = ["supervised", "webhook", "bare", "human_driven", "unknown"];
 const WAKE_KINDS: readonly string[] = ["none", "watch", "serve", "webhook"];
 const HOST_DECISION_KINDS: readonly string[] = ["decision", "handoff", "takeover"];
+const WORKFLOW_KINDS: readonly string[] = ["pipeline", "parallel", "orchestrator-workers", "evaluator-optimizer"];
 const MENTION_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+const WORKFLOW_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const MAX_MENTIONS = 50;
 const MENTIONS_JSON_LIMIT = 4096;
 const MAX_STATUS_SCOPE = 50;
 const STATUS_SCOPE_JSON_LIMIT = 4096;
 const STATUS_DECISION_JSON_LIMIT = 4096;
+const STATUS_WORKFLOW_JSON_LIMIT = 4096;
 const MAX_COMPLETION_RELATED = 20;
 const COMPLETION_ARTIFACT_JSON_LIMIT = 4096;
 
@@ -273,8 +279,60 @@ function parseStoredHostDecision(input: unknown, owner: string): HostDecision | 
   }
 }
 
+function safeWorkflowId(input: unknown): string | undefined | null {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!WORKFLOW_ID_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+function parseSendStatusWorkflow(input: unknown): SendStatusWorkflow | undefined | null {
+  if (input === undefined) return undefined;
+  if (typeof input !== "object" || input === null) return null;
+  const raw = input as Record<string, unknown>;
+  const workflowId = safeWorkflowId(raw.workflow_id);
+  const kind = typeof raw.kind === "string" && WORKFLOW_KINDS.includes(raw.kind) ? (raw.kind as WorkflowKind) : null;
+  const runId = safeWorkflowId(raw.run_id);
+  const stepId = safeWorkflowId(raw.step_id);
+  if (workflowId === null || workflowId === undefined || kind === null || runId === null || stepId === null) {
+    return null;
+  }
+  const parentSummarySeq = parseOptionalPositiveSeq(raw.parent_summary_seq);
+  if (parentSummarySeq === undefined && raw.parent_summary_seq !== undefined) return null;
+  const workflow: SendStatusWorkflow = {
+    workflow_id: workflowId,
+    kind,
+    ...(runId === undefined ? {} : { run_id: runId }),
+    ...(stepId === undefined ? {} : { step_id: stepId }),
+    ...(parentSummarySeq === undefined ? {} : { parent_summary_seq: parentSummarySeq }),
+  };
+  return byteLength(JSON.stringify(workflow)) > STATUS_WORKFLOW_JSON_LIMIT ? null : workflow;
+}
+
+function statusWorkflowFromSend(input: SendStatusWorkflow | undefined): StatusWorkflow | undefined {
+  if (input === undefined) return undefined;
+  return {
+    workflow_id: input.workflow_id,
+    kind: input.kind,
+    run_id: input.run_id ?? null,
+    step_id: input.step_id ?? null,
+    parent_summary_seq: input.parent_summary_seq ?? null,
+  };
+}
+
+function parseStoredStatusWorkflow(input: unknown): StatusWorkflow | undefined {
+  if (typeof input !== "string" || input === "") return undefined;
+  try {
+    return statusWorkflowFromSend(parseSendStatusWorkflow(JSON.parse(input) as unknown) ?? undefined);
+  } catch {
+    return undefined;
+  }
+}
+
 function statusEventFromRow(r: Record<string, unknown>, owner: string, state: StatusState, updatedAt: number): StatusEvent {
   const decision = parseStoredHostDecision(r.status_decision_json, owner);
+  const workflow = parseStoredStatusWorkflow(r.status_workflow_json);
   return {
     owner,
     state,
@@ -290,6 +348,7 @@ function statusEventFromRow(r: Record<string, unknown>, owner: string, state: St
       return context === undefined ? {} : { context };
     })(),
     ...(decision === undefined ? {} : { decision }),
+    ...(workflow === undefined ? {} : { workflow }),
   };
 }
 
@@ -484,6 +543,8 @@ function parseSendFrame(input: unknown): SendFrame | null {
     if (blockedReason === null) return null;
     const decision = parseSendHostDecision(f.decision);
     if (decision === null) return null;
+    const workflow = parseSendStatusWorkflow(f.workflow);
+    if (workflow === null) return null;
     return {
       type: "send",
       kind: "status",
@@ -498,6 +559,7 @@ function parseSendFrame(input: unknown): SendFrame | null {
       ...(wake !== undefined ? { wake } : {}),
       ...(context !== undefined ? { context } : {}),
       ...(decision !== undefined ? { decision } : {}),
+      ...(workflow !== undefined ? { workflow } : {}),
     };
   }
   return null;
@@ -566,6 +628,7 @@ export class ChannelDO extends Server<Env> {
       status_blocked_reason TEXT,
       status_context_json TEXT,
       status_decision_json TEXT,
+      status_workflow_json TEXT,
       sender_role TEXT,
       sender_role_source TEXT,
       completion_artifact_json TEXT,
@@ -591,6 +654,7 @@ export class ChannelDO extends Server<Env> {
       "ALTER TABLE messages ADD COLUMN status_blocked_reason TEXT",
       "ALTER TABLE messages ADD COLUMN status_context_json TEXT",
       "ALTER TABLE messages ADD COLUMN status_decision_json TEXT",
+      "ALTER TABLE messages ADD COLUMN status_workflow_json TEXT",
       "ALTER TABLE messages ADD COLUMN sender_role TEXT",
       "ALTER TABLE messages ADD COLUMN sender_role_source TEXT",
       "ALTER TABLE messages ADD COLUMN completion_artifact_json TEXT",
@@ -618,6 +682,7 @@ export class ChannelDO extends Server<Env> {
       status_blocked_reason TEXT,
       status_context_json TEXT,
       status_decision_json TEXT,
+      status_workflow_json TEXT,
       role TEXT,
       role_source TEXT,
       residency TEXT,
@@ -639,6 +704,7 @@ export class ChannelDO extends Server<Env> {
       "ALTER TABLE presence ADD COLUMN status_blocked_reason TEXT",
       "ALTER TABLE presence ADD COLUMN status_context_json TEXT",
       "ALTER TABLE presence ADD COLUMN status_decision_json TEXT",
+      "ALTER TABLE presence ADD COLUMN status_workflow_json TEXT",
     ]) {
       try {
         sql.exec(ddl);
@@ -1700,6 +1766,7 @@ export class ChannelDO extends Server<Env> {
     const seq = this.lastSeq() + 1;
     const sender: Sender = senderFromIdentity(identity);
     const hostDecision = frame.kind === "status" ? hostDecisionFromSend(frame.decision, identity.name) : undefined;
+    const workflow = frame.kind === "status" ? statusWorkflowFromSend(frame.workflow) : undefined;
     const status: StatusEvent | null =
       frame.kind === "status"
         ? {
@@ -1711,6 +1778,7 @@ export class ChannelDO extends Server<Env> {
             updated_at: now,
             ...(frame.context === undefined ? {} : { context: frame.context }),
             ...(hostDecision === undefined ? {} : { decision: hostDecision }),
+            ...(workflow === undefined ? {} : { workflow }),
           }
         : null;
     const effectiveRole = identity.collabRole ?? (frame.kind === "status" ? frame.role : undefined);
@@ -1757,10 +1825,10 @@ export class ChannelDO extends Server<Env> {
       `INSERT INTO messages (
          seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
-         status_decision_json,
+         status_decision_json, status_workflow_json,
          sender_role, sender_role_source, completion_artifact_json, ts
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       seq,
       identity.name,
       identity.kind,
@@ -1777,6 +1845,7 @@ export class ChannelDO extends Server<Env> {
       status?.blocked_reason ?? null,
       status?.context === undefined ? null : JSON.stringify(status.context),
       hostDecision === undefined ? null : JSON.stringify(hostDecision),
+      workflow === undefined ? null : JSON.stringify(workflow),
       effectiveRole ?? null,
       roleSource ?? null,
       frame.kind === "message" && frame.completion_artifact !== undefined
@@ -1801,10 +1870,10 @@ export class ChannelDO extends Server<Env> {
       sql.exec(
         `INSERT INTO presence (
            name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
-           status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at, context_json,
+           status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at, context_json,
            lineage_json
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            state = excluded.state,
            note = excluded.note,
@@ -1814,6 +1883,7 @@ export class ChannelDO extends Server<Env> {
            status_blocked_reason = excluded.status_blocked_reason,
            status_context_json = excluded.status_context_json,
            status_decision_json = excluded.status_decision_json,
+           status_workflow_json = excluded.status_workflow_json,
            role = COALESCE(excluded.role, presence.role),
            role_source = COALESCE(excluded.role_source, presence.role_source),
            residency = COALESCE(excluded.residency, presence.residency),
@@ -1830,6 +1900,7 @@ export class ChannelDO extends Server<Env> {
         status?.blocked_reason ?? null,
         status?.context === undefined ? null : JSON.stringify(status.context),
         hostDecision === undefined ? null : JSON.stringify(hostDecision),
+        workflow === undefined ? null : JSON.stringify(workflow),
         effectiveRole ?? null,
         roleSource ?? null,
         frame.residency ?? null,
@@ -2032,7 +2103,7 @@ export class ChannelDO extends Server<Env> {
     return this.ctx.storage.sql
       .exec(
         `SELECT name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
-                status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at,
+                status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at,
                 context_json, lineage_json
          FROM presence ORDER BY name`,
       )
@@ -2044,7 +2115,7 @@ export class ChannelDO extends Server<Env> {
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT name, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
-                status_context_json, status_decision_json, role, role_source, residency, wake_kind, wake_verified_at,
+                status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at,
                 context_json, lineage_json
          FROM presence WHERE name = ?`,
         name,

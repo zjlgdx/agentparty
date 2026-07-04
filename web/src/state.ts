@@ -150,6 +150,7 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
             note: frame.note,
             ts: frame.ts,
             last_seen: frame.last_seen,
+            status: frame.status,
             role: frame.role,
             role_source: frame.role_source,
             residency: frame.residency,

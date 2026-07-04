@@ -8,6 +8,7 @@ import {
   type StatusEvent,
   type StatusState,
   type WakeKind,
+  type StatusWorkflow,
 } from "@agentparty/shared";
 import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel } from "../config";
@@ -55,6 +56,7 @@ interface ClaimSummary {
   blocked_reason: string | null;
   summary_seq: number | null;
   updated_at: number;
+  workflow: StatusWorkflow | null;
 }
 
 interface DecisionSummary {
@@ -142,6 +144,7 @@ function claimFrom(seq: number, status: StatusEvent): ClaimSummary {
     blocked_reason: status.blocked_reason,
     summary_seq: status.summary_seq,
     updated_at: status.updated_at,
+    workflow: status.workflow ?? null,
   };
 }
 
@@ -212,7 +215,8 @@ function printBoard(board: HostBoard) {
   console.log(`open claims: ${board.open_claims.length}`);
   for (const claim of board.open_claims) {
     const blocked = claim.blocked_reason === null ? "" : ` blocked=${claim.blocked_reason}`;
-    console.log(`- #${claim.seq} ${claim.owner} ${claim.state} scope=${scopeLabel(claim.scope)}${blocked}`);
+    const workflow = claim.workflow === null ? "" : ` workflow=${claim.workflow.workflow_id}/${claim.workflow.kind}`;
+    console.log(`- #${claim.seq} ${claim.owner} ${claim.state} scope=${scopeLabel(claim.scope)}${workflow}${blocked}`);
   }
   console.log(`blockers: ${board.blockers.length}`);
   for (const blocker of board.blockers) {

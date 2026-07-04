@@ -17,6 +17,18 @@ function formatContext(ctx: AgentContext | undefined): string[] {
   ].filter((part): part is string => part !== null);
 }
 
+function formatWorkflow(status: MsgFrame["status"]): string[] {
+  const workflow = status?.workflow;
+  if (workflow === undefined) return [];
+  return [
+    `workflow=${workflow.workflow_id}`,
+    `workflow_kind=${workflow.kind}`,
+    workflow.run_id !== null ? `run=${workflow.run_id}` : null,
+    workflow.step_id !== null ? `step=${workflow.step_id}` : null,
+    workflow.parent_summary_seq !== null ? `parent_summary=#${workflow.parent_summary_seq}` : null,
+  ].filter((part): part is string => part !== null);
+}
+
 export function formatMsg(m: MsgFrame): string {
   const badges = [
     m.completion_artifact !== undefined ? "completion" : null,
@@ -28,7 +40,12 @@ export function formatMsg(m: MsgFrame): string {
   const suffix = badges.length > 0 ? ` {${badges.join("; ")}}` : "";
   const prefix = `[${m.seq}] ${formatSender(m)}${suffix}: `;
   if (m.kind === "status") {
-    const parts = [m.note, ...formatContext(m.status?.context), m.status?.scope.length ? `scope=${m.status.scope.join(",")}` : null];
+    const parts = [
+      m.note,
+      ...formatContext(m.status?.context),
+      ...formatWorkflow(m.status),
+      m.status?.scope.length ? `scope=${m.status.scope.join(",")}` : null,
+    ];
     if (m.status?.blocked_reason) parts.push(`blocked=${m.status.blocked_reason}`);
     if (m.status?.summary_seq !== null && m.status?.summary_seq !== undefined) parts.push(`summary=#${m.status.summary_seq}`);
     const detail = parts.filter((part): part is string => typeof part === "string" && part !== "").join(" · ");
