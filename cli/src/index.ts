@@ -29,6 +29,7 @@ commands:
   history   [channel|--channel C] [--since seq] [--limit n] [--json] [--completion]
   search    <query> [--channel C] [--from name] [--since seq] [--limit n] [--json]
   digest    [channel|--channel C] [--since seq|last-seen] [--json]
+  host      board [channel|--channel C] [--since seq] [--limit n] [--json]
   capture   <seq>|list [channel|--channel C] --as decision|requirement|bug|action-item [-m note] [--json] [--issue-body]
   wake      test @agent [channel|--channel C] [--timeout N] [--json]
   channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug] | role list|set|unset
@@ -85,6 +86,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/search")).run(rest);
     case "digest":
       return (await import("./commands/digest")).run(rest);
+    case "host":
+      return (await import("./commands/host")).run(rest);
     case "capture":
       return (await import("./commands/capture")).run(rest);
     case "wake":

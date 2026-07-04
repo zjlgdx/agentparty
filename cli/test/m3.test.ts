@@ -730,6 +730,151 @@ describe("party status/history channel flag", () => {
     });
   });
 
+  test("host board summarizes host lease, claims, blockers, and decisions", async () => {
+    const now = Date.now();
+    mock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: "Dev",
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "host-a",
+                  state: "working",
+                  note: "coordinating",
+                  ts: now - 1000,
+                  last_seen: now - 1000,
+                  role: "host",
+                  role_source: "assigned",
+                  residency: "supervised",
+                  wake: { kind: "serve", verified_at: now - 2000 },
+                },
+                {
+                  name: "host-b",
+                  state: "working",
+                  note: "manual",
+                  ts: now - 1000,
+                  last_seen: now - 1000,
+                  role: "host",
+                  role_source: "self",
+                  residency: "human_driven",
+                  wake: { kind: "none" },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      if (req.method === "GET" && req.path === "/api/channels/dev/messages") {
+        return Response.json({
+          messages: [
+            {
+              type: "status",
+              seq: 10,
+              sender: { name: "worker-a", kind: "agent" },
+              kind: "status",
+              body: "working ui",
+              mentions: [],
+              reply_to: null,
+              state: "working",
+              note: "working ui",
+              status: {
+                owner: "worker-a",
+                state: "working",
+                scope: ["web/src"],
+                summary_seq: null,
+                blocked_reason: null,
+                updated_at: 10000,
+              },
+              ts: 10000,
+            },
+            {
+              type: "status",
+              seq: 11,
+              sender: { name: "worker-b", kind: "agent" },
+              kind: "status",
+              body: "blocked",
+              mentions: [],
+              reply_to: null,
+              state: "blocked",
+              note: "blocked",
+              status: {
+                owner: "worker-b",
+                state: "blocked",
+                scope: ["worker/src"],
+                summary_seq: null,
+                blocked_reason: "need token",
+                updated_at: 11000,
+              },
+              ts: 11000,
+            },
+            {
+              type: "status",
+              seq: 12,
+              sender: { name: "host-a", kind: "agent" },
+              kind: "status",
+              body: "handoff",
+              mentions: [],
+              reply_to: null,
+              state: "working",
+              note: "handoff",
+              status: {
+                owner: "host-a",
+                state: "working",
+                scope: [],
+                summary_seq: null,
+                blocked_reason: null,
+                updated_at: 12000,
+                decision: {
+                  kind: "handoff",
+                  owner: "host-a",
+                  decision: "handoff release gate",
+                  next: "reviewer signs off",
+                  expires_at: null,
+                  handoff_to: "reviewer-1",
+                },
+              },
+              ts: 12000,
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["host", "board", "dev", "--json"]);
+    expect(r.code).toBe(0);
+    const frame = JSON.parse(r.stdout.trim()) as {
+      type: string;
+      hosts: Array<{ name: string; lease: string; stale_reason: string | null }>;
+      open_claims: Array<{ owner: string; state: string; scope: string[] }>;
+      blockers: Array<{ owner: string; blocked_reason: string | null }>;
+      decisions: Array<{ owner: string; kind: string; handoff_to: string | null }>;
+    };
+    expect(frame.type).toBe("host_board");
+    expect(frame.hosts).toEqual([
+      expect.objectContaining({ name: "host-a", lease: "active", stale_reason: null }),
+      expect.objectContaining({ name: "host-b", lease: "stale", stale_reason: "residency=human_driven" }),
+    ]);
+    expect(frame.open_claims).toEqual([
+      expect.objectContaining({ owner: "host-a", state: "working", scope: [] }),
+      expect.objectContaining({ owner: "worker-b", state: "blocked", scope: ["worker/src"] }),
+      expect.objectContaining({ owner: "worker-a", state: "working", scope: ["web/src"] }),
+    ]);
+    expect(frame.blockers).toEqual([expect.objectContaining({ owner: "worker-b", blocked_reason: "need token" })]);
+    expect(frame.decisions).toEqual([
+      expect.objectContaining({ owner: "host-a", kind: "handoff", handoff_to: "reviewer-1" }),
+    ]);
+    expect(reqsOf(mock, "GET", "/api/channels/dev/messages")[0]!.query).toMatchObject({
+      since: "0",
+      limit: "500",
+    });
+  });
+
   test("history --completion asks server for completion artifacts only", async () => {
     mock = startRestMock();
     writeCfg(mock.url);
