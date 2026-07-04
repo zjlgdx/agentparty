@@ -1,0 +1,18 @@
+mode=mock party_version=0.2.2 server=http://127.0.0.1:54680 channel=ap-id-1783146220-68077
+[1] apt-b-1783146220-68077(agent): identity-a-before-reinit-1783146220-68077
+[2] apt-b-1783146220-68077(agent): identity-a-after-b-reinit-1783146220-68077
+[3] apt-b-1783146220-68077(agent): identity-b-1783146220-68077
+FAIL history sender: identity-a-before-reinit-1783146220-68077 did not come from apt-a-1783146220-68077
+FAIL history sender: identity-a-after-b-reinit-1783146220-68077 did not come from apt-a-1783146220-68077
+ok history sender: identity-b-1783146220-68077 -> apt-b-1783146220-68077
+--- watch A (to-b, exit=2) ---
+TIMEOUT
+--- watch B (to-b, exit=2) ---
+TIMEOUT
+FAIL mention delivery: B did not receive mention-apt-b-1783146220-68077-from-apt-a-1783146220-68077-1783146220-68077-to-b
+--- watch A (to-a, exit=2) ---
+TIMEOUT
+--- watch B (to-a, exit=2) ---
+TIMEOUT
+FAIL mention delivery: A did not receive mention-apt-a-1783146220-68077-from-apt-b-1783146220-68077-1783146220-68077-to-a
+FAIL identity isolation checks failed (4 failure(s))

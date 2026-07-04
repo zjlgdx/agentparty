@@ -11,6 +11,7 @@ import {
   type TokenRole,
   type WebhookFilter,
 } from "@agentparty/shared";
+import pkg from "../package.json" with { type: "json" };
 
 export type { ChannelMode, WebhookFilter };
 
@@ -285,7 +286,14 @@ export async function kickParticipant(
 export function handleRestError(e: unknown): number {
   if (e instanceof RestError) {
     console.error(`error: ${e.code ?? e.status} ${e.message}`);
-    if (e.status === 401) return EXIT_AUTH;
+    if (e.status === 401) {
+      // #2：旧版 CLI 会把「需升级」误报成 unauthorized，看着像 token 失效。附版本 + 升级指引降低误诊。
+      console.error(
+        `hint: 若确认 token 未撤销，多半是 CLI 过旧（当前 party v${pkg.version}）——旧版曾把「需升级」误报成本条。\n` +
+          `      升级后重试：curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh`,
+      );
+      return EXIT_AUTH;
+    }
     if (e.code === "loop_guard") return EXIT_LOOP_GUARD;
     if (e.code === "archived") return EXIT_ARCHIVED;
     return 1;

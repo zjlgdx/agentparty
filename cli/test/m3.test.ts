@@ -623,10 +623,14 @@ describe("party status/history channel flag", () => {
 describe("rest error mapping", () => {
   test("403 unauthorized is permission denial, not bad-token exit 3", () => {
     const prev = console.error;
-    console.error = () => {};
+    const errs: string[] = [];
+    console.error = (...args: unknown[]) => errs.push(args.map(String).join(" "));
     try {
       expect(handleRestError(new RestError(403, "unauthorized", "readonly token cannot send"))).toBe(1);
       expect(handleRestError(new RestError(401, "unauthorized", "invalid token"))).toBe(3);
+      const stderr = errs.join("\n");
+      expect(stderr).toContain("当前 party v");
+      expect(stderr).toContain("install.sh | sh");
     } finally {
       console.error = prev;
     }

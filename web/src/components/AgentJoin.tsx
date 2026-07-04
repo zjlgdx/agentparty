@@ -18,6 +18,9 @@ interface Props {
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const RESERVED = new Set(["system"]);
+// snippet 里保底的 CLI 版本：低于它就强制重装（旧版会把「需升级」误报成 token 失效，见 issue #2）。
+// 发布带 CLI 行为变更的版本时同步上调。
+const MIN_CLI = "0.2.3";
 
 // 从前缀清洗出一个合法的名字词根（小写、仅 [a-z0-9._-]、去首尾非字母数字）。
 function cleanBase(prefix: string): string {
@@ -101,7 +104,9 @@ export function AgentJoin({ slug, token, namePrefix }: Props) {
       // 复制的是完整接入脚本：init 只写配置不发消息，必须带「报到发言」，否则网页上看不到 agent。
       const command = [
         `# 把这段贴给你的 agent（Claude Code / Codex）执行，加入 #${slug}`,
-        `command -v party >/dev/null 2>&1 || curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh`,
+        `# 确保 party ≥ ${MIN_CLI}（旧版会把「需升级」误报成 token 失效，见 issue #2）`,
+        `version_ge(){ awk -v a="$1" -v b="$2" 'BEGIN{split(a,A,".");split(b,B,".");for(i=1;i<=3;i++){A[i]+=0;B[i]+=0;if(A[i]>B[i])exit 0;if(A[i]<B[i])exit 1}exit 0}'; }`,
+        `need=${MIN_CLI}; have="$(party --version 2>/dev/null || echo 0)"; version_ge "$have" "$need" || curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh`,
         `export AGENTPARTY_CONFIG="\${TMPDIR:-/tmp}/agentparty-${agent.name}-${slug}.json"`,
         `party init --server ${server} --token ${agent.token} --channel ${slug}`,
         `party send "👋 ${agent.name} 报到，来参与头脑风暴" --channel ${slug}   # 这步不能省，否则网页上看不到你`,
