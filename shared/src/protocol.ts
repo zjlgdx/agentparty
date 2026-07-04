@@ -48,6 +48,7 @@ export type Residency = "supervised" | "webhook" | "bare" | "human_driven" | "un
 export type WakeKind = "none" | "watch" | "serve" | "webhook";
 export type HostDecisionKind = "decision" | "handoff" | "takeover";
 export type WorkflowKind = "pipeline" | "parallel" | "orchestrator-workers" | "evaluator-optimizer";
+export type HostLeaseState = "active" | "stale";
 
 export interface WakeInfo {
   kind: WakeKind;
@@ -183,6 +184,41 @@ export interface PresenceEntry {
   wake?: WakeInfo;
   context?: AgentContext;
   lineage?: AgentLineage;
+}
+
+export interface HostLeaseEvaluation {
+  lease: HostLeaseState;
+  reason: string | null;
+  last_seen: number | null;
+  residency: Residency | "unknown";
+  wake_kind: WakeKind | "unknown";
+}
+
+export function presenceLastSeen(entry: Pick<PresenceEntry, "last_seen" | "ts">): number | null {
+  return entry.last_seen ?? entry.ts ?? null;
+}
+
+export function evaluateHostLease(
+  entry: Pick<PresenceEntry, "state" | "ts" | "last_seen" | "role" | "residency" | "wake">,
+  now: number,
+  leaseMs = PRESENCE_TIMEOUT_MS,
+): HostLeaseEvaluation {
+  const seen = presenceLastSeen(entry);
+  const residency = entry.residency ?? "unknown";
+  const wakeKind = entry.wake?.kind ?? "unknown";
+  if (entry.role !== "host") {
+    return { lease: "stale", reason: `role=${entry.role ?? "missing"}`, last_seen: seen, residency, wake_kind: wakeKind };
+  }
+  if (entry.state === "offline") return { lease: "stale", reason: "offline", last_seen: seen, residency, wake_kind: wakeKind };
+  if (residency !== "supervised" && residency !== "webhook") {
+    return { lease: "stale", reason: `residency=${residency}`, last_seen: seen, residency, wake_kind: wakeKind };
+  }
+  if (wakeKind === "none" || wakeKind === "unknown") {
+    return { lease: "stale", reason: `wake=${wakeKind}`, last_seen: seen, residency, wake_kind: wakeKind };
+  }
+  if (seen === null) return { lease: "stale", reason: "missing-last-seen", last_seen: seen, residency, wake_kind: wakeKind };
+  if (now - seen > leaseMs) return { lease: "stale", reason: "lease-expired", last_seen: seen, residency, wake_kind: wakeKind };
+  return { lease: "active", reason: null, last_seen: seen, residency, wake_kind: wakeKind };
 }
 
 // ---- 客户端 → 服务端帧 ----

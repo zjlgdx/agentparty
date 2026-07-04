@@ -1,7 +1,8 @@
 // party host board — derived coordinator board from presence + retained status history.
 import {
-  PRESENCE_TIMEOUT_MS,
+  evaluateHostLease,
   type HostDecision,
+  type HostLeaseState,
   type MsgFrame,
   type PresenceEntry,
   type Residency,
@@ -31,8 +32,6 @@ Options:
   --since seq   only inspect status messages after seq
   --limit n     maximum messages to inspect (default 500, max 1000)
   --json        emit one structured JSON frame`;
-
-type HostLeaseState = "active" | "stale";
 
 interface HostSummary {
   name: string;
@@ -70,6 +69,14 @@ interface DecisionSummary {
   takeover_from: string | null;
 }
 
+interface RecommendedAction {
+  kind: "clear-loop-guard" | "takeover" | "assign-host" | "review-blockers";
+  reason: string;
+  target: string | null;
+  command: string | null;
+  requires_human: boolean;
+}
+
 interface HostBoard {
   schema: "agentparty.v1";
   type: "host_board";
@@ -80,37 +87,14 @@ interface HostBoard {
   open_claims: ClaimSummary[];
   blockers: ClaimSummary[];
   decisions: DecisionSummary[];
-}
-
-function lastSeen(entry: PresenceEntry): number | null {
-  return entry.last_seen ?? entry.ts ?? null;
-}
-
-function presenceWakeKind(entry: PresenceEntry): WakeKind | "unknown" {
-  return entry.wake?.kind ?? "unknown";
-}
-
-function hostLease(entry: PresenceEntry, now: number): { lease: HostLeaseState; reason: string | null } {
-  const seen = lastSeen(entry);
-  const residency = entry.residency ?? "unknown";
-  const wakeKind = presenceWakeKind(entry);
-  if (entry.state === "offline") return { lease: "stale", reason: "offline" };
-  if (residency !== "supervised" && residency !== "webhook") {
-    return { lease: "stale", reason: `residency=${residency}` };
-  }
-  if (wakeKind === "none" || wakeKind === "unknown") {
-    return { lease: "stale", reason: `wake=${wakeKind}` };
-  }
-  if (seen === null) return { lease: "stale", reason: "missing-last-seen" };
-  if (now - seen > PRESENCE_TIMEOUT_MS) return { lease: "stale", reason: "lease-expired" };
-  return { lease: "active", reason: null };
+  recommended_actions: RecommendedAction[];
 }
 
 function summarizeHosts(presence: PresenceEntry[], now: number): HostSummary[] {
   return presence
     .filter((entry) => entry.role === "host")
     .map((entry) => {
-      const lease = hostLease(entry, now);
+      const lease = evaluateHostLease(entry, now);
       return {
         name: entry.name,
         lease: lease.lease,
@@ -118,10 +102,10 @@ function summarizeHosts(presence: PresenceEntry[], now: number): HostSummary[] {
         state: entry.state,
         note: entry.note,
         role_source: entry.role_source ?? null,
-        residency: entry.residency ?? "unknown",
-        wake_kind: presenceWakeKind(entry),
+        residency: lease.residency,
+        wake_kind: lease.wake_kind,
         wake_verified_at: entry.wake?.verified_at ?? null,
-        last_seen: lastSeen(entry),
+        last_seen: lease.last_seen,
       };
     })
     .sort((a, b) => {
@@ -186,18 +170,88 @@ function summarizeStatus(messages: MsgFrame[]): {
   };
 }
 
+function shellWord(s: string): string {
+  return /^[a-zA-Z0-9._:@%+=,/-]+$/.test(s) ? s : JSON.stringify(s);
+}
+
+function isLoopGuardBlocker(claim: ClaimSummary): boolean {
+  const text = `${claim.blocked_reason ?? ""} ${claim.note ?? ""}`.toLowerCase();
+  return claim.owner === "system" && text.includes("loop guard");
+}
+
+function recommendActions(channel: string, hosts: HostSummary[], blockers: ClaimSummary[]): RecommendedAction[] {
+  const actions: RecommendedAction[] = [];
+  if (blockers.some(isLoopGuardBlocker)) {
+    actions.push({
+      kind: "clear-loop-guard",
+      reason: "loop guard is tripped; agent messages are rejected until a human message or owner reset",
+      target: null,
+      command: `party channel reset-guard ${shellWord(channel)}`,
+      requires_human: true,
+    });
+  }
+
+  const activeHosts = hosts.filter((host) => host.lease === "active");
+  const staleHosts = hosts.filter((host) => host.lease === "stale");
+  if (activeHosts.length === 0 && staleHosts.length > 0) {
+    const target = staleHosts[0]!;
+    actions.push({
+      kind: "takeover",
+      reason: `no active resident host; latest host is stale (${target.stale_reason ?? "stale"})`,
+      target: target.name,
+      command: [
+        "party status",
+        shellWord(channel),
+        "working",
+        "-m",
+        shellWord(`takeover host from ${target.name}`),
+        "--role host",
+        "--decision-kind takeover",
+        "--decision",
+        shellWord(`takeover stale host ${target.name}`),
+        "--takeover-from",
+        shellWord(target.name),
+      ].join(" "),
+      requires_human: false,
+    });
+  } else if (hosts.length === 0) {
+    actions.push({
+      kind: "assign-host",
+      reason: "no visible host role in channel presence",
+      target: null,
+      command: `party channel role set <agent-name> host ${shellWord(channel)}`,
+      requires_human: true,
+    });
+  }
+
+  const nonLoopBlockers = blockers.filter((claim) => !isLoopGuardBlocker(claim));
+  if (nonLoopBlockers.length > 0) {
+    actions.push({
+      kind: "review-blockers",
+      reason: `${nonLoopBlockers.length} blocked claim(s) need host triage`,
+      target: nonLoopBlockers[0]!.owner,
+      command: null,
+      requires_human: false,
+    });
+  }
+
+  return actions;
+}
+
 function buildBoard(channel: string, presence: PresenceEntry[], messages: MsgFrame[], now = Date.now()): HostBoard {
   const status = summarizeStatus(messages);
+  const hosts = summarizeHosts(presence, now);
   return {
     schema: "agentparty.v1",
     type: "host_board",
     channel,
     generated_at: now,
     last_seq: messages.at(-1)?.seq ?? 0,
-    hosts: summarizeHosts(presence, now),
+    hosts,
     open_claims: status.openClaims,
     blockers: status.blockers,
     decisions: status.decisions,
+    recommended_actions: recommendActions(channel, hosts, status.blockers),
   };
 }
 
@@ -227,6 +281,13 @@ function printBoard(board: HostBoard) {
     const handoff = decision.handoff_to === null ? "" : ` handoff=${decision.handoff_to}`;
     const takeover = decision.takeover_from === null ? "" : ` takeover=${decision.takeover_from}`;
     console.log(`- #${decision.seq} ${decision.owner} ${decision.kind}: ${decision.decision}${handoff}${takeover}`);
+  }
+  console.log(`recommended actions: ${board.recommended_actions.length}`);
+  for (const action of board.recommended_actions) {
+    const human = action.requires_human ? " human" : "";
+    const target = action.target === null ? "" : ` target=${action.target}`;
+    const command = action.command === null ? "" : ` command=${action.command}`;
+    console.log(`- ${action.kind}${human}${target}: ${action.reason}${command}`);
   }
 }
 

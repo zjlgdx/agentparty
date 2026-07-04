@@ -883,6 +883,7 @@ describe("party status/history channel flag", () => {
       open_claims: Array<{ owner: string; state: string; scope: string[]; workflow: { workflow_id: string } | null }>;
       blockers: Array<{ owner: string; blocked_reason: string | null; workflow: { workflow_id: string } | null }>;
       decisions: Array<{ owner: string; kind: string; handoff_to: string | null }>;
+      recommended_actions: Array<{ kind: string; target: string | null; requires_human: boolean }>;
     };
     expect(frame.type).toBe("host_board");
     expect(frame.hosts).toEqual([
@@ -909,10 +910,101 @@ describe("party status/history channel flag", () => {
     expect(frame.decisions).toEqual([
       expect.objectContaining({ owner: "host-a", kind: "handoff", handoff_to: "reviewer-1" }),
     ]);
+    expect(frame.recommended_actions).toEqual([
+      expect.objectContaining({ kind: "review-blockers", target: "worker-b", requires_human: false }),
+    ]);
     expect(reqsOf(mock, "GET", "/api/channels/dev/messages")[0]!.query).toMatchObject({
       since: "0",
       limit: "500",
     });
+  });
+
+  test("host board recommends human guard reset and takeover when only stale hosts remain", async () => {
+    const now = Date.now();
+    mock = startRestMock((req) => {
+      if (req.method === "GET" && req.path === "/api/channels") {
+        return Response.json({
+          channels: [
+            {
+              slug: "dev",
+              title: "Dev",
+              kind: "standing",
+              archived_at: null,
+              presence: [
+                {
+                  name: "host-old",
+                  state: "working",
+                  note: "manual host",
+                  ts: now - 120_000,
+                  last_seen: now - 120_000,
+                  role: "host",
+                  role_source: "self",
+                  residency: "human_driven",
+                  wake: { kind: "none" },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      if (req.method === "GET" && req.path === "/api/channels/dev/messages") {
+        return Response.json({
+          messages: [
+            {
+              type: "status",
+              seq: 20,
+              sender: { name: "system", kind: "agent" },
+              kind: "status",
+              body: "loop guard",
+              mentions: [],
+              reply_to: null,
+              state: "blocked",
+              note: "loop guard tripped",
+              status: {
+                owner: "system",
+                state: "blocked",
+                scope: [],
+                summary_seq: null,
+                blocked_reason: "loop guard tripped: 200 consecutive agent messages",
+                updated_at: 20_000,
+              },
+              ts: 20_000,
+            },
+          ],
+        });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["host", "board", "dev", "--json"]);
+    expect(r.code).toBe(0);
+    const frame = JSON.parse(r.stdout.trim()) as {
+      hosts: Array<{ name: string; lease: string; stale_reason: string | null }>;
+      recommended_actions: Array<{
+        kind: string;
+        target: string | null;
+        command: string | null;
+        requires_human: boolean;
+      }>;
+    };
+    expect(frame.hosts).toEqual([
+      expect.objectContaining({ name: "host-old", lease: "stale", stale_reason: "residency=human_driven" }),
+    ]);
+    expect(frame.recommended_actions).toEqual([
+      expect.objectContaining({
+        kind: "clear-loop-guard",
+        target: null,
+        command: "party channel reset-guard dev",
+        requires_human: true,
+      }),
+      expect.objectContaining({
+        kind: "takeover",
+        target: "host-old",
+        requires_human: false,
+      }),
+    ]);
+    expect(frame.recommended_actions[1]!.command).toContain("--decision-kind takeover");
+    expect(frame.recommended_actions[1]!.command).toContain("--takeover-from host-old");
   });
 
   test("history --completion asks server for completion artifacts only", async () => {

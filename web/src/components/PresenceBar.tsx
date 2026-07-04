@@ -1,6 +1,6 @@
 // 顶部 presence 条：每参与者一个手绘胶囊（名字 + 蜡笔状态点 + note + 相对时间），
 // 右端挂连接状态。"对方卡在哪"一眼可见（spec §9 第 3 块）。
-import { PRESENCE_TIMEOUT_MS, type PresenceEntry, type Sender } from "@agentparty/shared";
+import { evaluateHostLease, type PresenceEntry, type PresenceState, type Sender } from "@agentparty/shared";
 import { useEffect, useState, type CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
 import { fmtRel } from "../lib/time";
@@ -16,7 +16,7 @@ interface Props {
 
 interface Item {
   name: string;
-  state: string; // PresenceState | "online"（已连接但还没报过 status）
+  state: PresenceState | "online"; // "online" = 已连接但还没报过 status
   note: string | null;
   ts: number | null;
   lastSeen: number | null;
@@ -32,11 +32,20 @@ interface Item {
 }
 
 function hasActiveHostLease(item: Item, now: number): boolean {
-  const lastSeen = item.lastSeen ?? item.ts;
-  if (item.role !== "host" || lastSeen === null) return false;
-  if (item.residency !== "supervised" && item.residency !== "webhook") return false;
-  if (item.wakeKind === null || item.wakeKind === "none") return false;
-  return item.state !== "offline" && now - lastSeen <= PRESENCE_TIMEOUT_MS;
+  const state: PresenceState = item.state === "online" ? "working" : item.state;
+  return evaluateHostLease(
+    {
+      state,
+      ts: item.ts ?? 0,
+      ...(item.lastSeen === null ? {} : { last_seen: item.lastSeen }),
+      ...(item.role === null ? {} : { role: item.role }),
+      ...(item.residency === null ? {} : { residency: item.residency }),
+      ...(item.wakeKind === null
+        ? {}
+        : { wake: item.wakeVerifiedAt === null ? { kind: item.wakeKind } : { kind: item.wakeKind, verified_at: item.wakeVerifiedAt } }),
+    },
+    now,
+  ).lease === "active";
 }
 
 function hostBadge(item: Item, now: number): string | null {
