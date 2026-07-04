@@ -1,6 +1,6 @@
 // party watch — 补拉错过消息，阻塞等新消息
 import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_TIMEOUT } from "@agentparty/shared";
-import { parseArgs, str, unknownFlagError, valueFlagError } from "../args";
+import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { connect } from "../client";
 import { loadCursor, resolveChannel, saveCursor } from "../config";
 import { resolveAuth } from "../oidc-cli";
@@ -9,6 +9,17 @@ import { MAX_TIMEOUT_SEC, isSlug, parsePositiveIntFlag } from "../validation";
 import { jsonFrame, nowTs } from "../json";
 
 const WATCH_FLAGS = ["channel", "timeout", "follow", "mentions-only", "json"];
+const HELP = `usage: party watch [channel|--channel C] [--timeout N] [--mentions-only] [--follow] [--json]
+
+Watch a channel for new messages. By default this waits up to 240 seconds.
+With --follow, it stays attached unless --timeout N is explicit.
+
+Options:
+  --channel C       watch channel C instead of the bound channel
+  --timeout N       stop after N seconds
+  --mentions-only   print only non-self messages that mention this agent
+  --follow          keep watching after the first matching message
+  --json            emit structured NDJSON frames`;
 
 export interface WatchOptions {
   server: string;
@@ -92,6 +103,10 @@ export async function runWatch(o: WatchOptions): Promise<number> {
 }
 
 export async function run(argv: string[]): Promise<number> {
+  if (isHelpArg(argv, { allowHelpPositional: true })) {
+    console.log(HELP);
+    return 0;
+  }
   const { positionals, flags } = parseArgs(argv, { booleans: ["follow", "mentions-only", "json"] });
   const cfg = await resolveAuth();
   if (!cfg) {

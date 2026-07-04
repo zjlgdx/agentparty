@@ -64,6 +64,15 @@ describe("cli subprocess", () => {
     }
   });
 
+  test("json-capable subcommands support --help without auth or config", async () => {
+    for (const cmd of ["whoami", "watch", "history"]) {
+      const r = await runCli([cmd, "--help"]);
+      expect(r.code, cmd).toBe(0);
+      expect(r.stdout, cmd).toContain(`usage: party ${cmd}`);
+      expect(r.stderr, cmd).toBe("");
+    }
+  });
+
   test("--version 输出非空版本号并 exit 0", async () => {
     const r = await runCli(["--version"]);
     expect(r.code).toBe(0);

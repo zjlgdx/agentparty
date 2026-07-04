@@ -1,5 +1,5 @@
 // party history — rest 拉历史消息
-import { parseArgs, str, unknownFlagError, valueFlagError } from "../args";
+import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel } from "../config";
 import { resolveAuth } from "../oidc-cli";
 import { fetchMessages, handleRestError } from "../rest";
@@ -8,8 +8,21 @@ import { isSlug, parseNonNegativeIntFlag, parsePositiveIntFlag } from "../valida
 import { jsonFrame } from "../json";
 
 const HISTORY_FLAGS = ["channel", "since", "limit", "json"];
+const HELP = `usage: party history [channel|--channel C] [--since seq] [--limit n] [--json]
+
+Fetch recent channel messages over REST.
+
+Options:
+  --channel C   read channel C instead of the bound channel
+  --since seq   only return messages after seq
+  --limit n     maximum messages to return
+  --json        emit structured NDJSON frames`;
 
 export async function run(argv: string[]): Promise<number> {
+  if (isHelpArg(argv, { allowHelpPositional: true })) {
+    console.log(HELP);
+    return 0;
+  }
   const { positionals, flags } = parseArgs(argv, { booleans: ["json"] });
   const cfg = await resolveAuth();
   if (!cfg) {

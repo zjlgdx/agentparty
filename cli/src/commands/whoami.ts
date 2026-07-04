@@ -1,13 +1,24 @@
 // party whoami — 打印当前身份，调 /api/me 验活
 import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD } from "@agentparty/shared";
-import { parseArgs, unknownFlagError } from "../args";
+import { isHelpArg, parseArgs, unknownFlagError } from "../args";
 import { handleRestError, fetchMe, RestError } from "../rest";
 import { resolveAuth } from "../oidc-cli";
 import { jsonFrame, nowTs } from "../json";
 
 const WHOAMI_FLAGS = ["json", "caps"];
+const HELP = `usage: party whoami [--json] [--caps]
+
+Print the current identity from /api/me.
+
+Options:
+  --json   emit a structured JSON frame
+  --caps   print token capabilities and channel scope`;
 
 export async function run(argv: string[]): Promise<number> {
+  if (isHelpArg(argv, { allowHelpPositional: true })) {
+    console.log(HELP);
+    return 0;
+  }
   const { flags } = parseArgs(argv, { booleans: ["json", "caps"] });
   const unknown = unknownFlagError(flags, WHOAMI_FLAGS);
   if (unknown !== null) {
