@@ -10,6 +10,7 @@ import {
   type SendMessageFrame,
   type SendStatusFrame,
   type TokenRole,
+  type WakeDelivery,
   type WebhookFilter,
 } from "@agentparty/shared";
 import pkg from "../package.json" with { type: "json" };
@@ -247,6 +248,24 @@ export async function fetchMessages(
   );
   const messages = (body as Record<string, unknown> | null)?.messages;
   return Array.isArray(messages) ? (messages as MsgFrame[]) : [];
+}
+
+export async function fetchWakeDeliveries(
+  server: string,
+  token: string,
+  slug: string,
+  opts: { since?: number; target?: string; limit?: number } = {},
+): Promise<WakeDelivery[]> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set("since", String(opts.since));
+  if (opts.target !== undefined) params.set("target", opts.target);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const body = await req(server, `/api/channels/${encodeURIComponent(slug)}/wake-deliveries${suffix}`, {
+    headers: bearerJson(token),
+  });
+  const deliveries = (body as Record<string, unknown> | null)?.deliveries;
+  return Array.isArray(deliveries) ? (deliveries as WakeDelivery[]) : [];
 }
 
 export type MessagePayload = Omit<SendMessageFrame, "type"> | Omit<SendStatusFrame, "type">;

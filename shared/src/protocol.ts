@@ -48,6 +48,20 @@ export interface WakeInfo {
   verified_at?: number;
 }
 
+export interface WakeDelivery {
+  mention_seq: number;
+  target_name: string;
+  webhook_name: string;
+  adapter_kind: WakeKind;
+  attempt: number;
+  result: "ok" | "failed";
+  http_status: number | null;
+  error: string | null;
+  attempted_at: number;
+  ack_seq: number | null;
+  resume_seq: number | null;
+}
+
 export type ErrorCode =
   | "bad_request"
   | "unauthorized"

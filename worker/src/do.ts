@@ -49,6 +49,12 @@ interface Identity {
   tokenHash: string;
 }
 
+interface WebhookDeliveryResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+}
+
 type SendOutcome =
   | { ok: true; seq: number; frames: ServerFrame[] }
   | { ok: false; code: ErrorCode; message: string };
@@ -334,6 +340,20 @@ export class ChannelDO extends Server<Env> {
       attempts INTEGER NOT NULL DEFAULT 0,
       next_retry_at INTEGER NOT NULL
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS wake_delivery_ledger (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mention_seq INTEGER NOT NULL,
+      target_name TEXT NOT NULL,
+      webhook_name TEXT NOT NULL,
+      adapter_kind TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      result TEXT NOT NULL,
+      http_status INTEGER,
+      error TEXT,
+      attempted_at INTEGER NOT NULL,
+      ack_seq INTEGER,
+      resume_seq INTEGER
+    )`);
     this.ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair('{"type":"ping"}', '{"type":"pong"}'),
     );
@@ -519,21 +539,30 @@ export class ChannelDO extends Server<Env> {
         this.ctx.storage.sql.exec("DELETE FROM webhook_queue WHERE id = ?", id);
         continue;
       }
-      const ok = await this.deliverWebhook(String(row.url), String(row.secret), String(row.payload));
-      if (ok) {
+      const webhookName = String(row.webhook_name);
+      const payload = String(row.payload);
+      const attempt = Number(row.attempts) + 1;
+      const delivery = await this.deliverWebhook(String(row.url), String(row.secret), payload);
+      this.recordWakeDelivery({
+        mentionSeq: this.seqFromWebhookPayload(payload),
+        targetName: webhookName,
+        webhookName,
+        attempt,
+        delivery,
+      });
+      if (delivery.ok) {
         this.ctx.storage.sql.exec("DELETE FROM webhook_queue WHERE id = ?", id);
         continue;
       }
-      const attempts = Number(row.attempts) + 1;
-      if (attempts > WEBHOOK_MAX_RETRIES) {
+      if (attempt > WEBHOOK_MAX_RETRIES) {
         this.ctx.storage.sql.exec("DELETE FROM webhook_queue WHERE id = ?", id);
-        this.insertSystemStatus(`webhook ${String(row.webhook_name)} 连续投递失败已停用本条`, now);
+        this.insertSystemStatus(`webhook ${webhookName} 连续投递失败已停用本条`, now);
         continue;
       }
       this.ctx.storage.sql.exec(
         "UPDATE webhook_queue SET attempts = ?, next_retry_at = ? WHERE id = ?",
-        attempts,
-        now + this.retryDelay(attempts),
+        attempt,
+        now + this.retryDelay(attempt),
         id,
       );
     }
@@ -647,11 +676,21 @@ export class ChannelDO extends Server<Env> {
     if (targets.length === 0) return;
     // 并行投递：一个慢/坏端点不再拖累其余 hook（首投已由 afterSend 的 waitUntil 移出发送关键路径）
     const results = await Promise.all(
-      targets.map(async (hook) => ({ hook, ok: await this.deliverWebhook(hook.url, hook.secret, payload) })),
+      targets.map(async (hook) => ({
+        hook,
+        delivery: await this.deliverWebhook(hook.url, hook.secret, payload),
+      })),
     );
     let needAlarm = false;
-    for (const { hook, ok } of results) {
-      if (ok) continue;
+    for (const { hook, delivery } of results) {
+      this.recordWakeDelivery({
+        mentionSeq: msg.seq,
+        targetName: hook.name,
+        webhookName: hook.name,
+        attempt: 1,
+        delivery,
+      });
+      if (delivery.ok) continue;
       const queued = Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM webhook_queue").one().n);
       if (queued >= MAX_WEBHOOK_QUEUE_ROWS) {
         await this.insertSystemStatus("webhook retry queue is full; dropping failed delivery", now);
@@ -669,7 +708,7 @@ export class ChannelDO extends Server<Env> {
   }
 
   // 短超时 POST；Bearer = 注册时的 secret，HMAC 签 payload 供接收方校验（spec §15）
-  private async deliverWebhook(url: string, secret: string, payload: string): Promise<boolean> {
+  private async deliverWebhook(url: string, secret: string, payload: string): Promise<WebhookDeliveryResult> {
     try {
       const signature = await hmacSha256Hex(secret, payload);
       const res = await fetch(url, {
@@ -683,9 +722,46 @@ export class ChannelDO extends Server<Env> {
         redirect: "manual",
         signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       });
-      return res.ok;
+      return {
+        ok: res.ok,
+        status: res.status,
+        error: res.ok ? null : res.statusText || `HTTP ${res.status}`,
+      };
+    } catch (err) {
+      return { ok: false, status: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private recordWakeDelivery(args: {
+    mentionSeq: number;
+    targetName: string;
+    webhookName: string;
+    attempt: number;
+    delivery: WebhookDeliveryResult;
+  }) {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO wake_delivery_ledger (
+         mention_seq, target_name, webhook_name, adapter_kind, attempt,
+         result, http_status, error, attempted_at, ack_seq, resume_seq
+       )
+       VALUES (?, ?, ?, 'webhook', ?, ?, ?, ?, ?, NULL, NULL)`,
+      args.mentionSeq,
+      args.targetName,
+      args.webhookName,
+      args.attempt,
+      args.delivery.ok ? "ok" : "failed",
+      args.delivery.status,
+      args.delivery.error,
+      Date.now(),
+    );
+  }
+
+  private seqFromWebhookPayload(payload: string): number {
+    try {
+      const parsed = JSON.parse(payload) as { seq?: unknown };
+      return typeof parsed.seq === "number" && Number.isInteger(parsed.seq) && parsed.seq > 0 ? parsed.seq : 0;
     } catch {
-      return false;
+      return 0;
     }
   }
 
@@ -793,6 +869,38 @@ export class ChannelDO extends Server<Env> {
         .exec("SELECT * FROM messages WHERE seq > ? ORDER BY seq LIMIT ?", since, limit)
         .toArray();
       return Response.json({ messages: rows.map((r) => this.rowToFrame(r)) });
+    }
+    if (url.pathname === "/internal/wake-deliveries" && request.method === "GET") {
+      const since = Math.max(toInt(url.searchParams.get("since"), 0), 0);
+      const limit = Math.min(Math.max(toInt(url.searchParams.get("limit"), 20), 1), 100);
+      const target = url.searchParams.get("target");
+      const targetSql = target === null ? "" : " AND target_name = ?";
+      const args: (number | string)[] = target === null ? [since, limit] : [since, target, limit];
+      const deliveries = this.ctx.storage.sql
+        .exec(
+          `SELECT mention_seq, target_name, webhook_name, adapter_kind, attempt,
+                  result, http_status, error, attempted_at, ack_seq, resume_seq
+             FROM wake_delivery_ledger
+            WHERE mention_seq >= ?${targetSql}
+            ORDER BY mention_seq, attempt, id
+            LIMIT ?`,
+          ...args,
+        )
+        .toArray()
+        .map((r) => ({
+          mention_seq: Number(r.mention_seq),
+          target_name: String(r.target_name),
+          webhook_name: String(r.webhook_name),
+          adapter_kind: String(r.adapter_kind),
+          attempt: Number(r.attempt),
+          result: String(r.result),
+          http_status: r.http_status === null ? null : Number(r.http_status),
+          error: r.error === null ? null : String(r.error),
+          attempted_at: Number(r.attempted_at),
+          ack_seq: r.ack_seq === null ? null : Number(r.ack_seq),
+          resume_seq: r.resume_seq === null ? null : Number(r.resume_seq),
+        }));
+      return Response.json({ deliveries });
     }
     if (url.pathname === "/internal/messages" && request.method === "POST") {
       this.cacheChannelMeta(request.headers, request.headers.get("x-ap-host"));

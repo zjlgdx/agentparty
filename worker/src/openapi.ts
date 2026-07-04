@@ -193,6 +193,23 @@ export const openapiDocument = {
         },
       },
     },
+    "/api/channels/{slug}/wake-deliveries": {
+      get: {
+        summary: "wake adapter delivery ledger",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "since", in: "query", schema: { type: "integer", default: 0 } },
+          { name: "target", in: "query", schema: { type: "string" } },
+          { name: "limit", in: "query", schema: { type: "integer", default: 20 } },
+        ],
+        responses: {
+          "200": { description: "{deliveries:[{mention_seq,target_name,webhook_name,adapter_kind,attempt,result,http_status,error,attempted_at,ack_seq,resume_seq}]}" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel not found" },
+        },
+      },
+    },
     "/api/channels/{slug}/archive": {
       post: {
         summary: "archive a channel",

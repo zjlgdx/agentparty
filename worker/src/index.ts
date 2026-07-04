@@ -483,6 +483,22 @@ app.get("/api/channels/:slug/messages", async (c) => {
   );
 });
 
+app.get("/api/channels/:slug/wake-deliveries", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!canAccessChannel(c.get("identity"), channel)) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  const search = new URL(c.req.url).search;
+  return stub.fetch(
+    new Request(`https://do/internal/wake-deliveries${search}`, {
+      headers: { "x-partykit-room": slug },
+    }),
+  );
+});
+
 app.post("/api/channels/:slug/messages", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);

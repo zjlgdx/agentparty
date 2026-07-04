@@ -1,6 +1,7 @@
 import { WEBHOOK_TIMEOUT_MS } from "@agentparty/shared";
-import { fetchMock } from "cloudflare:test";
+import { env, fetchMock, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { ChannelDO } from "../src/do";
 import { api, createChannel, seedToken, uniq } from "./helpers";
 
 beforeAll(() => {
@@ -9,10 +10,10 @@ beforeAll(() => {
 });
 afterEach(() => fetchMock.assertNoPendingInterceptors());
 
-function sendMessage(slug: string, token: string, body: string) {
+function sendMessage(slug: string, token: string, body: string, mentions: string[] = []) {
   return api(`/api/channels/${slug}/messages`, token, {
     method: "POST",
-    body: JSON.stringify({ kind: "message", body, mentions: [], reply_to: null }),
+    body: JSON.stringify({ kind: "message", body, mentions, reply_to: null }),
   });
 }
 
@@ -21,6 +22,32 @@ function addWebhook(slug: string, token: string, name: string, url: string) {
     method: "POST",
     body: JSON.stringify({ name, url, secret: "s", filter: "all" }),
   });
+}
+
+async function ledgerRows(slug: string) {
+  const stub = env.CHANNELS.get(env.CHANNELS.idFromName(slug));
+  return runInDurableObject(stub, async (_instance: ChannelDO, state) =>
+    state.storage.sql
+      .exec(
+        `SELECT mention_seq, target_name, webhook_name, adapter_kind, attempt,
+                result, http_status, error, ack_seq, resume_seq
+         FROM wake_delivery_ledger
+         ORDER BY id`,
+      )
+      .toArray()
+      .map((r) => ({
+        mention_seq: Number(r.mention_seq),
+        target_name: String(r.target_name),
+        webhook_name: String(r.webhook_name),
+        adapter_kind: String(r.adapter_kind),
+        attempt: Number(r.attempt),
+        result: String(r.result),
+        http_status: r.http_status === null ? null : Number(r.http_status),
+        error: r.error === null ? null : String(r.error),
+        ack_seq: r.ack_seq === null ? null : Number(r.ack_seq),
+        resume_seq: r.resume_seq === null ? null : Number(r.resume_seq),
+      })),
+  );
 }
 
 describe("webhook dispatch is off the send path", () => {
@@ -49,5 +76,94 @@ describe("webhook dispatch is off the send path", () => {
 
     // 让后台 waitUntil 投递把 mock 消费掉，afterEach 才不报未消费 interceptor
     await new Promise((r) => setTimeout(r, 3_200));
+  });
+
+  it("records webhook wake delivery attempts durably", async () => {
+    const { token } = await seedToken("agent");
+    const slug = await createChannel(token);
+    const hook = uniq("wake");
+    expect((await addWebhook(slug, token, hook, "https://ledger.test/wake")).status).toBe(201);
+
+    fetchMock.get("https://ledger.test").intercept({ path: "/wake", method: "POST" }).reply(202, "accepted");
+    expect((await sendMessage(slug, token, `@${hook} ping`, [hook])).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(await ledgerRows(slug)).toEqual([
+      {
+        mention_seq: 1,
+        target_name: hook,
+        webhook_name: hook,
+        adapter_kind: "webhook",
+        attempt: 1,
+        result: "ok",
+        http_status: 202,
+        error: null,
+        ack_seq: null,
+        resume_seq: null,
+      },
+    ]);
+
+    const apiRes = await api(`/api/channels/${slug}/wake-deliveries?since=1&target=${hook}`, token);
+    expect(apiRes.status).toBe(200);
+    expect((await apiRes.json()) as { deliveries: unknown[] }).toMatchObject({
+      deliveries: [
+        {
+          mention_seq: 1,
+          target_name: hook,
+          webhook_name: hook,
+          adapter_kind: "webhook",
+          attempt: 1,
+          result: "ok",
+          http_status: 202,
+          error: null,
+          ack_seq: null,
+          resume_seq: null,
+        },
+      ],
+    });
+  });
+
+  it("records failed webhook attempts and successful alarm retries", async () => {
+    const { token } = await seedToken("agent");
+    const slug = await createChannel(token);
+    const hook = uniq("wake");
+    expect((await addWebhook(slug, token, hook, "https://retry-ledger.test/wake")).status).toBe(201);
+
+    expect((await sendMessage(slug, token, `@${hook} ping`, [hook])).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    fetchMock.get("https://retry-ledger.test").intercept({ path: "/wake", method: "POST" }).reply(200, "ok");
+    const stub = env.CHANNELS.get(env.CHANNELS.idFromName(slug));
+    await runInDurableObject(stub, async (instance: ChannelDO, state) => {
+      state.storage.sql.exec("UPDATE webhook_queue SET next_retry_at = ?", Date.now() - 1);
+      await instance.onAlarm();
+    });
+
+    const rows = await ledgerRows(slug);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      mention_seq: 1,
+      target_name: hook,
+      webhook_name: hook,
+      adapter_kind: "webhook",
+      attempt: 1,
+      result: "failed",
+      http_status: null,
+      ack_seq: null,
+      resume_seq: null,
+    });
+    expect(rows[0]?.error).toEqual(expect.any(String));
+    expect(rows[1]).toMatchObject({
+      mention_seq: 1,
+      target_name: hook,
+      webhook_name: hook,
+      adapter_kind: "webhook",
+      attempt: 2,
+      result: "ok",
+      http_status: 200,
+      error: null,
+      ack_seq: null,
+      resume_seq: null,
+    });
   });
 });

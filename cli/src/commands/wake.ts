@@ -1,10 +1,10 @@
 // party wake test — prove mention/wake/resume as separate phases.
-import { EXIT_TIMEOUT, type MsgFrame, type PresenceEntry } from "@agentparty/shared";
+import { EXIT_TIMEOUT, type MsgFrame, type PresenceEntry, type WakeDelivery } from "@agentparty/shared";
 import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel } from "../config";
 import { jsonFrame, nowTs } from "../json";
 import { resolveAuth } from "../oidc-cli";
-import { fetchMessages, handleRestError, listChannels, postMessage } from "../rest";
+import { RestError, fetchMessages, fetchWakeDeliveries, handleRestError, listChannels, postMessage } from "../rest";
 import { MAX_TIMEOUT_SEC, isName, isSlug, parsePositiveIntFlag } from "../validation";
 
 const WAKE_FLAGS = ["channel", "timeout", "json"];
@@ -83,6 +83,49 @@ function findLinkedAck(messages: MsgFrame[], target: string, mentionSeq: number)
     if (evidence !== null) return { seq: m.seq, evidence };
   }
   return null;
+}
+
+function summarizeWakeDelivery(delivery: WakeDelivery | null, adapter: string | null): { ok: boolean | null; adapter: string | null; evidence: string } {
+  if (delivery === null) {
+    return {
+      ok: null,
+      adapter,
+      evidence: "adapter delivery is not audited by the worker yet; only linked resume is conclusive",
+    };
+  }
+  if (delivery.result === "ok") {
+    const status = delivery.http_status === null ? "" : ` status=${delivery.http_status}`;
+    return {
+      ok: true,
+      adapter,
+      evidence: `webhook delivery attempt ${delivery.attempt}${status} for mention #${delivery.mention_seq}`,
+    };
+  }
+  const status = delivery.http_status === null ? "" : ` status=${delivery.http_status}`;
+  const error = delivery.error ? ` error=${delivery.error}` : "";
+  return {
+    ok: false,
+    adapter,
+    evidence: `webhook delivery attempt ${delivery.attempt} failed${status}${error} for mention #${delivery.mention_seq}`,
+  };
+}
+
+async function fetchLatestWebhookDelivery(
+  server: string,
+  token: string,
+  channel: string,
+  target: string,
+  mentionSeq: number,
+): Promise<WakeDelivery | null> {
+  try {
+    const deliveries = await fetchWakeDeliveries(server, token, channel, { since: mentionSeq, target, limit: 20 });
+    return deliveries
+      .filter((d) => d.mention_seq === mentionSeq && d.adapter_kind === "webhook")
+      .at(-1) ?? null;
+  } catch (e) {
+    if (e instanceof RestError && (e.status === 404 || e.status === 501)) return null;
+    throw e;
+  }
 }
 
 function printHuman(frame: WakeTestFrame) {
@@ -194,11 +237,18 @@ export async function run(argv: string[]): Promise<number> {
     });
     const deadline = Date.now() + timeoutSec * 1000;
     let ack: { seq: number; evidence: AckEvidence } | null = null;
+    let wakeDelivery: WakeDelivery | null = null;
     do {
+      if (adapter === "webhook") {
+        wakeDelivery = await fetchLatestWebhookDelivery(cfg.server, cfg.token, channel, target, seq);
+      }
       ack = findLinkedAck(await fetchMessages(cfg.server, cfg.token, channel, seq, 100), target, seq);
       if (ack !== null) break;
       await sleep(Math.min(1000, Math.max(100, deadline - Date.now())));
     } while (Date.now() < deadline);
+    if (adapter === "webhook" && wakeDelivery === null) {
+      wakeDelivery = await fetchLatestWebhookDelivery(cfg.server, cfg.token, channel, target, seq);
+    }
 
     const frame: WakeTestFrame = {
       type: "wake_test",
@@ -210,11 +260,7 @@ export async function run(argv: string[]): Promise<number> {
       presence: summarizePresence(presence),
       phases: {
         mention_delivered: { ok: true, seq, evidence: "message accepted by channel history" },
-        wake_invoked: {
-          ok: null,
-          adapter,
-          evidence: "adapter delivery is not audited by the worker yet; only linked resume is conclusive",
-        },
+        wake_invoked: summarizeWakeDelivery(wakeDelivery, adapter),
         agent_resumed: { ok: ack !== null, seq: ack?.seq ?? null, evidence: ack?.evidence ?? null },
       },
       reason: ack === null ? "timed out waiting for linked reply_to/status.summary_seq" : null,
