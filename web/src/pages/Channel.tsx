@@ -35,6 +35,7 @@ export function ChannelPage({
 }: Props) {
   const [state, dispatch] = useReducer(channelReducer, initialChannelState);
   const [draft, setDraft] = useState("");
+  const [search, setSearch] = useState("");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const sockRef = useRef<ChannelSocket | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
@@ -120,6 +121,15 @@ export function ChannelPage({
 
   const canWrite = state.self !== null && !state.archived && !state.readonly;
 
+  // 频道搜索（#25 web 半边）：客户端子串过滤已加载的消息，body/note/sender 命中。始终可用（含只读/归档回看）。
+  const q = search.trim().toLowerCase();
+  const shown = q
+    ? state.messages.filter((m) => {
+        const text = m.kind === "message" ? m.body : (m.note ?? "");
+        return text.toLowerCase().includes(q) || m.sender.name.toLowerCase().includes(q);
+      })
+    : state.messages;
+
   // 私有频道拒入（spec §3）：ws 已停止重连，给一条友好红条，不留空白 / 不无限转圈
   if (state.forbidden) {
     return (
@@ -145,13 +155,34 @@ export function ChannelPage({
           <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} />
         </div>
       )}
+      {(state.messages.length > 0 || q !== "") && (
+        <div className="chan-search-row">
+          <input
+            className="t-mono chan-search"
+            type="search"
+            value={search}
+            spellCheck={false}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="🔍 搜本频道消息（正文 / 发送者）"
+            aria-label="search messages"
+          />
+          {q !== "" && (
+            <span className="t-mono chan-search-count">{shown.length} 命中</span>
+          )}
+        </div>
+      )}
       <div className="stream" ref={streamRef} onScroll={onScroll}>
-        {state.messages.map((m) => (
+        {shown.map((m) => (
           <MessageCard key={m.seq} msg={m} self={state.self} />
         ))}
         {state.messages.length === 0 && (
           <p className="d-empty" role="status" aria-live="polite">
             party watch {slug}
+          </p>
+        )}
+        {state.messages.length > 0 && q !== "" && shown.length === 0 && (
+          <p className="d-empty" role="status" aria-live="polite">
+            没有匹配「{search.trim()}」的消息
           </p>
         )}
       </div>

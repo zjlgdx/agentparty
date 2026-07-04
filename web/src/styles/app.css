@@ -334,6 +334,26 @@
 }
 .stream > .d-empty { margin: auto 0; }
 
+/* 频道搜索行（#25 web 半边）：客户端过滤消息流 */
+.chan-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 2px;
+}
+.chan-search {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 6px 11px;
+  color: var(--t-text);
+  background: var(--t-panel2);
+  border: 2px solid var(--d-ink);
+  border-radius: 10px 7px 12px 6px / 7px 11px 6px 10px;
+}
+.chan-search:focus { outline: none; border-color: var(--t-accent); }
+.chan-search-count { flex: none; font-size: 11px; color: var(--t-dim); white-space: nowrap; }
+
 .msg-card--own { background: var(--t-panel2); }
 /* per-agent 颜色：--ah（sender 名哈希出的色相 0–359）由 MessageCard 注入。
    左侧 inset 色条叠在原偏移投影上，一眼分辨谁在说话，不动手绘 ::before 边框。 */
