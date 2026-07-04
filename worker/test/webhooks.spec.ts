@@ -263,6 +263,51 @@ describe("webhooks", () => {
     expect(await queueRows(slug)).toHaveLength(0);
   });
 
+  it("mentions filter also wakes on status mentions", async () => {
+    const { token } = await seedToken("agent");
+    const slug = await createChannel(token);
+    const secret = "status-hook";
+    expect(
+      (await addWebhook(slug, token, { name: "dispatcher", url: "https://hooks.test/status", secret })).status,
+    ).toBe(201);
+
+    let captured: CapturedRequest | null = null;
+    fetchMock
+      .get("https://hooks.test")
+      .intercept({ path: "/status", method: "POST" })
+      .reply(200, (opts) => {
+        captured = normalize(opts as { headers?: unknown; body?: unknown });
+        return "ok";
+      });
+
+    const res = await api(`/api/channels/${slug}/messages`, token, {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "status",
+        state: "working",
+        note: "claimed webhook wake verification",
+        mentions: ["dispatcher"],
+      }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(captured).not.toBeNull();
+    const { headers, body } = captured as unknown as CapturedRequest;
+    const payload = JSON.parse(body) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      type: "msg",
+      kind: "status",
+      state: "working",
+      note: "claimed webhook wake verification",
+      body: "claimed webhook wake verification",
+      mentions: ["dispatcher"],
+      channel: slug,
+    });
+    expect(headers.authorization).toBe(`Bearer ${secret}`);
+    expect(headers["x-agentparty-signature"]).toBe(`hmac-sha256=${await hmacHex(secret, body)}`);
+    expect(await queueRows(slug)).toHaveLength(0);
+  });
+
   it("filter all delivers messages without mentions", async () => {
     const { token } = await seedToken("agent");
     const slug = await createChannel(token);

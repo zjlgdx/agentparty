@@ -18,6 +18,7 @@ commands:
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
   watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow]
+  serve     [channel|--channel C] --on-mention "<cmd>" [--all]   常驻：每条 @你 的消息跑一次命令（唤醒睡着的 agent）
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
   status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
   history   [channel|--channel C] [--since seq] [--limit n]
@@ -55,6 +56,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/send")).run(rest);
     case "watch":
       return (await import("./commands/watch")).run(rest);
+    case "serve":
+      return (await import("./commands/serve")).run(rest);
     case "ask":
       return (await import("./commands/ask")).run(rest);
     case "status":

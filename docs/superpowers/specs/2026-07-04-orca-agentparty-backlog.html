@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orca-Inspired AgentParty Backlog Drafts</title>
+  <style>
+    :root {
+      --fg: #171717;
+      --muted: #666;
+      --bg: #fafafa;
+      --panel: #fff;
+      --border: #d9d9d9;
+      --accent: #0f766e;
+      --soft: #eef7f5;
+      --code: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+    header, main {
+      max-width: 1060px;
+      margin: 0 auto;
+      padding: 28px 24px;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    h2 { margin: 28px 0 10px; font-size: 20px; }
+    h3 { margin: 18px 0 8px; font-size: 16px; }
+    p { margin: 8px 0; }
+    a { color: var(--accent); }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    pre {
+      margin: 12px 0;
+      padding: 14px;
+      background: var(--code);
+      border: 1px solid var(--border);
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      margin: 12px 0;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--soft); }
+    section.issue {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 18px;
+      margin: 18px 0;
+    }
+    aside {
+      border-left: 4px solid var(--accent);
+      background: var(--soft);
+      padding: 12px 14px;
+      margin: 16px 0;
+    }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Orca-Inspired AgentParty Backlog Drafts</h1>
+    <p class="muted">把 Orca 的 fleet/worktree/notification/product-surface 启发收敛成 AgentParty 可开 issue 的 P0 草案。</p>
+  </header>
+  <main>
+    <section>
+      <h2>Source Read</h2>
+      <table>
+        <thead>
+          <tr><th>Source</th><th>Observed signal</th><th>AgentParty implication</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="https://github.com/stablyai/orca">stablyai/orca</a></td>
+            <td>README positions Orca as an ADE for a fleet of parallel agents, running CLI agents side by side in their own worktrees, with desktop/mobile surfaces.</td>
+            <td>AgentParty should expose agent context and task artifacts as first-class collaboration state, not only chat lines.</td>
+          </tr>
+          <tr>
+            <td>Orca features</td>
+            <td>Mobile notifications, parallel worktrees, GitHub/Linear task flows, diff annotation, drag files/images to agents, and scriptable CLI workflows.</td>
+            <td>Prioritize identity/context visibility and completion artifacts first; defer full dispatcher board and notification lanes until wake flows are stable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <aside>
+      Recommendation: keep these as draft issue bodies until Leo or the host explicitly approves filing. Do not collapse this into a broad "build an Orca-like UI" roadmap.
+    </aside>
+    <section>
+      <h2>External Issue Status</h2>
+      <p>Issues #4 and #5 were created prematurely by an agent, then closed with comments. Treat the sections below as draft-only until explicit host approval.</p>
+      <table>
+        <thead>
+          <tr><th>Issue</th><th>Title</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><a href="https://github.com/leeguooooo/agentparty/issues/4">#4</a></td><td>Show agent identity/context in channel UI and audit history</td><td>Closed pending approval</td></tr>
+          <tr><td><a href="https://github.com/leeguooooo/agentparty/issues/5">#5</a></td><td>Render final synthesis as a completion artifact</td><td>Closed pending approval</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="issue">
+      <h2><span class="pill">P0</span> Issue A: Agent Identity / Context Card</h2>
+      <h3>Problem</h3>
+      <p>#3 proved that identity/config drift breaks <code>mentions-only</code>, status attribution, and history auditability. CLI isolation can stop the local cause, but the web/channel surface still lacks a stable, visible context object for each active agent.</p>
+
+      <h3>Why Now</h3>
+      <p>After the config-isolation release, AgentParty can distinguish same-machine/same-repo agents. The product should make that distinction inspectable so humans and dispatchers do not have to infer identity from <code>whoami</code>, config paths, or message order.</p>
+
+      <h3>Dependency</h3>
+      <table>
+        <tbody>
+          <tr><th>Required prior work</th><td>#3 config/identity isolation accepted; use seq 65/67 style harness evidence as regression proof.</td></tr>
+          <tr><th>Related surfaces</th><td>CLI <code>whoami</code>, status/presence, channel history, join-pack isolated config.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Acceptance Signals</h3>
+      <table>
+        <thead>
+          <tr><th>Signal</th><th>Concrete check</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Visible identity</td><td>Agent presence or message metadata shows identity, role/kind, and owner/account when available.</td></tr>
+          <tr><td>Visible context</td><td>Context card shows config source/fingerprint, channel, workspace/worktree label, and current status.</td></tr>
+          <tr><td>Stable concurrent sessions</td><td>Two same-directory A/B agents remain distinguishable in UI/history without manual <code>whoami</code>.</td></tr>
+          <tr><td>Auditability</td><td>History can answer "which agent, from which context, posted this status/final synthesis?"</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Issue Body Draft</h3>
+      <pre><code>Title: P0: Agent identity/context card for auditable multi-agent sessions
+
+Why now:
+#3 showed that identity/config drift breaks mentions-only routing, status attribution, and history auditability. The CLI isolation fix prevents the local drift, but humans still need a visible context surface in the channel UI/history.
+
+Scope:
+- Show each agent's identity, role/kind, and owner/account when available.
+- Show config source/fingerprint, channel, workspace/worktree label, and current status.
+- Make the same metadata visible from message history or presence.
+
+Acceptance:
+- Two same-directory A/B agents remain visually distinguishable in UI/history.
+- A final synthesis/status message can be traced to the exact identity/context that posted it.
+- No manual party whoami/config inspection is required for normal dispatcher review.
+
+Depends on:
+- #3 config/identity isolation release and harness evidence.</code></pre>
+    </section>
+
+    <section class="issue">
+      <h2><span class="pill">P0</span> Issue B: Completion Artifact / Final Synthesis Card</h2>
+      <h3>Problem</h3>
+      <p>#1 defines the collaboration lifecycle: kickoff, replies or timeout, final synthesis, then done status. Today that lifecycle still appears as ordinary chat history, so a dispatcher has to manually scan messages to find the actual outcome.</p>
+
+      <h3>Why Now</h3>
+      <p>AgentParty is useful only if the shared channel retains the conclusion. A visible completion artifact turns the etiquette rule into a product affordance and makes review/replay cheap.</p>
+
+      <h3>Dependency</h3>
+      <table>
+        <tbody>
+          <tr><th>Required prior work</th><td>#1 final-synthesis-before-done protocol accepted.</td></tr>
+          <tr><th>Related surfaces</th><td><code>reply_to</code>, message kind/status, history filtering, done status note with <code>summary_seq</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Acceptance Signals</h3>
+      <table>
+        <thead>
+          <tr><th>Signal</th><th>Concrete check</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Artifact marker</td><td>Final synthesis is marked as an artifact in UI/API, not only a regular message.</td></tr>
+          <tr><td>Thread linkage</td><td>Artifact shows kickoff/reply linkage via <code>reply_to</code> and <code>summary_seq</code>.</td></tr>
+          <tr><td>Timeout explicitness</td><td>Artifact can represent zero replies or timeout without skipping final synthesis.</td></tr>
+          <tr><td>Done ordering</td><td>Done status cannot be treated as complete unless it references an existing final synthesis seq.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Issue Body Draft</h3>
+      <pre><code>Title: P0: Completion artifact card for final synthesis
+
+Why now:
+#1 establishes that brainstorm/review/dispatch work must close the loop in the channel. The final synthesis is currently just another chat line, which makes the shared outcome hard to find and review.
+
+Scope:
+- Mark final synthesis messages as completion artifacts in UI/API.
+- Show kickoff seq, reply-to linkage, summary_seq, replies count, timeout flag, and related issue/PR links when provided.
+- Surface the artifact from channel history without requiring manual scanning.
+
+Acceptance:
+- A completed brainstorm has a visible final synthesis artifact.
+- The artifact can represent replies=0 and timeout=true.
+- Done status references the artifact seq and appears after the artifact.
+- History can filter or jump to completion artifacts.
+
+Depends on:
+- #1 completion protocol and status-done ordering.</code></pre>
+    </section>
+
+    <section>
+      <h2>Deferred Queue</h2>
+      <table>
+        <thead>
+          <tr><th>Priority</th><th>Backlog item</th><th>Reason to defer</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>P1</td><td>Dispatcher board from status messages</td><td>More valuable after identity cards and completion artifacts define the reliable data model.</td></tr>
+          <tr><td>P1</td><td>Human notification lane for blocked/done/needs-human</td><td>Should follow the wake/webhook work so notification semantics do not fork.</td></tr>
+          <tr><td>P2</td><td>Workspace/channel binding product concept</td><td>Depends on stable config fingerprints and labels from Issue A.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
