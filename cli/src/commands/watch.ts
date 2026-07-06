@@ -8,11 +8,15 @@ import { formatMsg } from "../format";
 import { MAX_TIMEOUT_SEC, isSlug, parsePositiveIntFlag } from "../validation";
 import { jsonFrame, nowTs } from "../json";
 
-const WATCH_FLAGS = ["channel", "timeout", "follow", "mentions-only", "exclude-self", "json"];
-const HELP = `usage: party watch [channel|--channel C] [--timeout N] [--mentions-only] [--exclude-self] [--follow] [--json]
+const WATCH_FLAGS = ["channel", "timeout", "follow", "once", "mentions-only", "exclude-self", "json"];
+const HELP = `usage: party watch [channel|--channel C] [--timeout N] [--mentions-only] [--exclude-self] [--follow|--once] [--json]
 
 Watch a channel for new messages. By default this waits up to 240 seconds.
 With --follow, it stays attached unless --timeout N is explicit.
+With --once, it stays attached until the FIRST matching message, prints it, and
+exits 0 — made for harness background tasks (e.g. Claude Code run_in_background):
+the process exit is the wake signal, so the mention lands in your EXISTING
+session with its context intact.
 Self messages are skipped by default; --exclude-self is accepted as an explicit
 automation hint for scripts that want to document that behavior.
 
@@ -22,6 +26,7 @@ Options:
   --mentions-only   print only non-self messages that mention this agent
   --exclude-self    explicitly skip this agent's own messages (default)
   --follow          keep watching after the first matching message
+  --once            exit 0 right after the first matching message
   --json            emit structured NDJSON frames`;
 
 export interface WatchOptions {
@@ -32,15 +37,16 @@ export interface WatchOptions {
   timeoutSec: number;
   follow: boolean;
   mentionsOnly: boolean;
+  once?: boolean; // 第一条匹配消息后立即退出 0（harness 后台任务的唤醒信号）
   json?: boolean; // 输出 NDJSON 帧而非人类格式，供 supervisor/工具消费
   onCursor?: (cursor: number) => void;
   out?: (line: string) => void;
   backoffBaseMs?: number;
 }
 
-export function resolveWatchTimeoutSec(timeout: number | undefined, follow: boolean): number {
+export function resolveWatchTimeoutSec(timeout: number | undefined, indefinite: boolean): number {
   if (typeof timeout === "number") return timeout;
-  return follow ? 0 : 240;
+  return indefinite ? 0 : 240;
 }
 
 export async function runWatch(o: WatchOptions): Promise<number> {
@@ -54,6 +60,7 @@ export async function runWatch(o: WatchOptions): Promise<number> {
   let lastSeq = 0;
   let printed = 0;
   let timedOut = false;
+  let onceDone = false;
   let code = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   if (o.timeoutSec > 0) {
@@ -91,8 +98,13 @@ export async function runWatch(o: WatchOptions): Promise<number> {
       }
       // 打印（或有意跳过）之后才推进游标，退出时入队未消费的消息留给下次补拉
       if (msg.seq > 0) conn.ack(msg.seq);
+      // --once：第一条匹配消息即完成——游标已推进，进程退出就是 harness 的唤醒信号
+      if (o.once && qualifies) {
+        onceDone = true;
+        break;
+      }
       // 补拉排空（seq 追平 welcome.last_seq）且已有输出即视为收到新消息；自己的消息也参与排空判定
-      if (!o.follow && printed > 0 && msg.seq >= lastSeq) break;
+      if (!o.follow && !o.once && printed > 0 && msg.seq >= lastSeq) break;
     }
   } finally {
     if (timer) clearTimeout(timer);
@@ -103,10 +115,10 @@ export async function runWatch(o: WatchOptions): Promise<number> {
     out(o.json ? JSON.stringify(jsonFrame({ type: "timeout", channel: o.channel, timeout_sec: o.timeoutSec, ts: nowTs() })) : "TIMEOUT");
     return EXIT_TIMEOUT;
   }
-  // --follow：迭代器结束却既非超时也非终局 error，意味着连接层彻底放弃 / 帧流意外中断。
-  // 静默 return 0 会让 supervisor 误判为正常收尾 → 空日志静默消失（issue #29）。
-  // 输出机器可读的退出原因并返回非零码，让 supervisor 能看到失败并重启。
-  if (o.follow && !timedOut && code === 0) {
+  // --follow / 未完成的 --once：迭代器结束却既非超时也非终局 error，意味着连接层彻底放弃 /
+  // 帧流意外中断。静默 return 0 会让 supervisor（或把退出当唤醒信号的 harness）误判为正常
+  // 收尾（issue #29）。输出机器可读的退出原因并返回非零码，让上游能看到失败并重启。
+  if ((o.follow || (o.once === true && !onceDone)) && !timedOut && code === 0) {
     if (o.json) {
       out(JSON.stringify(jsonFrame({ type: "watch_exited", reason: "stream_ended", channel: o.channel, ts: nowTs() })));
     } else {
@@ -122,7 +134,11 @@ export async function run(argv: string[]): Promise<number> {
     console.log(HELP);
     return 0;
   }
-  const { positionals, flags } = parseArgs(argv, { booleans: ["follow", "mentions-only", "exclude-self", "json"] });
+  const { positionals, flags } = parseArgs(argv, { booleans: ["follow", "once", "mentions-only", "exclude-self", "json"] });
+  if (flags.follow === true && flags.once === true) {
+    console.error("--follow and --once are mutually exclusive: follow keeps watching, once exits after the first match");
+    return 1;
+  }
   const cfg = await resolveAuth();
   if (!cfg) {
     console.error("no config, run: party login or party init --server URL --token T");
@@ -157,8 +173,9 @@ export async function run(argv: string[]): Promise<number> {
     token: cfg.token,
     channel,
     since: loadCursor(channel),
-    timeoutSec: resolveWatchTimeoutSec(timeout, flags.follow === true),
+    timeoutSec: resolveWatchTimeoutSec(timeout, flags.follow === true || flags.once === true),
     follow: flags.follow === true,
+    once: flags.once === true,
     mentionsOnly: flags["mentions-only"] === true,
     json: flags.json === true,
     onCursor: (c) => saveCursor(channel, c),

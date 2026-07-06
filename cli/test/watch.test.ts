@@ -284,6 +284,68 @@ describe("runWatch", () => {
     expect(o.lines).toEqual(["[1] bob(agent): first", "[2] bob(agent): second"]);
   });
 
+  test("--once blocks past non-matching messages, exits 0 right after the first match", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0, "me"));
+        setTimeout(() => sock.send(msgFrame(1, "not for me")), 20);
+        setTimeout(() => sock.send(msgFrame(2, "own echo", { sender: { name: "me", kind: "agent" } })), 40);
+        setTimeout(() => sock.send(msgFrame(3, "wake", { mentions: ["me"] })), 60);
+        // 匹配后立刻退出，这条不应被消费
+        setTimeout(() => sock.send(msgFrame(4, "after", { mentions: ["me"] })), 200);
+      }
+    });
+    const cursors: number[] = [];
+    const o = opts({ server: server.url, once: true, mentionsOnly: true, timeoutSec: 0, onCursor: (c) => cursors.push(c) });
+    const started = Date.now();
+    expect(await runWatch(o)).toBe(0);
+    // 在 seq=4 到达前就退出（退出即 harness 的唤醒信号）
+    expect(Date.now() - started).toBeLessThan(180);
+    expect(o.lines).toEqual(["[3] bob(agent): wake"]);
+    // 游标推进过匹配消息，下次待命从 seq=3 之后继续
+    expect(cursors).toEqual([1, 2, 3]);
+  });
+
+  test("--once with a transient drop reconnects and still completes on the first match", async () => {
+    server = startMockServer((frame, sock, connIndex) => {
+      if (frame.type !== "hello") return;
+      if (connIndex === 0) {
+        sock.send(welcomeFrame(0, "me"));
+        sock.close(); // 普通断线 → once 仍应重连接着等
+      } else {
+        sock.send(welcomeFrame(1, "me"));
+        sock.send(msgFrame(1, "wake", { mentions: ["me"] }));
+      }
+    });
+    const o = opts({ server: server.url, once: true, mentionsOnly: true, timeoutSec: 5 });
+    expect(await runWatch(o)).toBe(0);
+    // 断线前没消费任何消息 → 重连仍从 since=0 开始
+    expect(server.hellos).toEqual([0, 0]);
+    expect(o.lines).toEqual(["[1] bob(agent): wake"]);
+  });
+
+  test("--once stream ending without a match exits EXIT_STREAM_ENDED, not silent 0", async () => {
+    // 把退出当唤醒信号的 harness 必须能区分「有消息」和「流挂了」——后者静默 0 会被误当唤醒
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0, "me"));
+        sock.close(1008, "eof");
+      }
+    });
+    const o = opts({ server: server.url, once: true, mentionsOnly: true, timeoutSec: 0, json: true });
+    expect(await runWatch(o)).toBe(EXIT_STREAM_ENDED);
+    expect(JSON.parse(o.lines[0]!)).toMatchObject({ type: "watch_exited", reason: "stream_ended" });
+  });
+
+  test("--once with explicit timeout and no match exits TIMEOUT", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") sock.send(welcomeFrame(0, "me"));
+    });
+    const o = opts({ server: server.url, once: true, mentionsOnly: true, timeoutSec: 0.2 });
+    expect(await runWatch(o)).toBe(EXIT_TIMEOUT);
+    expect(o.lines).toEqual(["TIMEOUT"]);
+  });
+
   test("cursor callback fires for received messages", async () => {
     server = startMockServer((frame, sock) => {
       if (frame.type === "hello") {
