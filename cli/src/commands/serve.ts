@@ -9,8 +9,10 @@ import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../
 import { connect } from "../client";
 import { loadCursor, resolveChannel, saveCursor } from "../config";
 import { formatMsg } from "../format";
-import { resolveAuth } from "../oidc-cli";
+import { resolveAuthDetailed, type ResolvedAuthDetailed } from "../oidc-cli";
+import { postMessage } from "../rest";
 import { isSlug } from "../validation";
+import { buildContext } from "./status";
 
 const PROTOCOL_REMINDER =
   "被 @ 唤起：需要产出结论时，先用 `party send --reply-to <seq>` 把 final synthesis 发回频道，再 status done；别只回本地。";
@@ -64,7 +66,25 @@ export interface ServeOptions {
   onCursor?: (cursor: number) => void;
   // 测试注入点：默认用 sh -c 起子进程
   runCommand?: (frame: MsgFrame, ctx: { cmd: string; channel: string; self: string }) => Promise<void>;
+  // serve 挂上后声明自己「可被唤醒」的钩子；run() 注入真实实现，测试可省略/替换
+  advertise?: () => Promise<void>;
   out?: (line: string) => void;
+}
+
+// serve 一挂上就把 presence 标成可唤醒：residency=supervised + wake.kind=serve。
+// 没这一步，agent 跑了 serve 但 presence 仍是 null → 别人 party wake test @你 会判 not_auto_wakeable，
+// agent 得自己再手动 party status --wake-kind serve --residency supervised 才行（外部 agent 就卡在这半天）。
+export async function advertiseServeWake(auth: ResolvedAuthDetailed, channel: string): Promise<void> {
+  if (!auth.server || !auth.token) return;
+  await postMessage(auth.server, auth.token, channel, {
+    kind: "status",
+    state: "waiting",
+    note: "serve supervisor 已挂上——被 @ 才唤起你一次，等待零 token",
+    mentions: [],
+    residency: "supervised",
+    wake: { kind: "serve" },
+    context: buildContext(auth),
+  });
 }
 
 // 默认执行器：把上下文写成 context file → sh -c <cmd>（cmd 里的 {file} 替成路径，也放进 AP_CONTEXT_FILE）。
@@ -113,6 +133,7 @@ export async function runServe(o: ServeOptions): Promise<number> {
 
   let self = "";
   let code = 0;
+  let advertised = false;
   out(
     `serving #${o.channel} — 每条${o.mentionsOnly ? " @你 的" : ""}消息触发一次命令（Ctrl-C 停）`,
   );
@@ -120,6 +141,15 @@ export async function runServe(o: ServeOptions): Promise<number> {
     for await (const frame of conn.frames) {
       if (frame.type === "welcome") {
         self = frame.self;
+        // 挂上即声明可唤醒（best-effort，只做一次；重连再收 welcome 不重复刷）
+        if (!advertised) {
+          advertised = true;
+          try {
+            await o.advertise?.();
+          } catch (e) {
+            out(`  wake 能力声明失败（不影响服务，可稍后手动 party status 声明）: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
         continue;
       }
       if (frame.type === "error") {
@@ -165,8 +195,8 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
   const { positionals, flags } = parseArgs(argv, { booleans: ["all"] });
-  const cfg = await resolveAuth();
-  if (!cfg) {
+  const auth = await resolveAuthDetailed();
+  if (!auth.server || !auth.token) {
     console.error("no config, run: party login or party init --server URL --token T");
     return 1;
   }
@@ -198,12 +228,13 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
   return runServe({
-    server: cfg.server,
-    token: cfg.token,
+    server: auth.server,
+    token: auth.token,
     channel,
     since: loadCursor(channel),
     cmd,
     mentionsOnly: flags.all !== true,
     onCursor: (c) => saveCursor(channel, c),
+    advertise: () => advertiseServeWake(auth, channel),
   });
 }

@@ -61,4 +61,42 @@ describe("runServe", () => {
     expect(await runServe(o)).toBe(EXIT_ARCHIVED);
     expect(o.lines.some((line) => line.includes("命令失败: command exited 7"))).toBe(true);
   });
+
+  test("advertises wake capability once on attach, before handling mentions", async () => {
+    const s = closeAfterOneMention();
+    let advertiseCalls = 0;
+    const order: string[] = [];
+    const o = opts({
+      server: s.url,
+      advertise: async () => {
+        advertiseCalls++;
+        order.push("advertise");
+      },
+      runCommand: async () => {
+        order.push("mention");
+      },
+    });
+
+    expect(await runServe(o)).toBe(EXIT_ARCHIVED);
+    expect(advertiseCalls).toBe(1); // 只声明一次
+    expect(order).toEqual(["advertise", "mention"]); // 声明先于处理 @
+  });
+
+  test("a failing advertise does not crash the server", async () => {
+    const s = closeAfterOneMention();
+    const seen: number[] = [];
+    const o = opts({
+      server: s.url,
+      advertise: async () => {
+        throw new Error("network down");
+      },
+      runCommand: async (frame) => {
+        seen.push(frame.seq);
+      },
+    });
+
+    expect(await runServe(o)).toBe(EXIT_ARCHIVED);
+    expect(seen).toEqual([1]); // 声明失败仍继续服务
+    expect(o.lines.some((line) => line.includes("wake 能力声明失败"))).toBe(true);
+  });
 });

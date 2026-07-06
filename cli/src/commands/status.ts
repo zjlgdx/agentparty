@@ -81,7 +81,7 @@ Options:
                    parent summary/status seq this workflow status refines
   --debug-auth     print resolved auth/config source to stderr`;
 
-function buildContext(auth: Awaited<ReturnType<typeof resolveAuthDetailed>>): AgentContext {
+export function buildContext(auth: Awaited<ReturnType<typeof resolveAuthDetailed>>): AgentContext {
   const wt = worktreeLabel();
   return {
     config_kind: auth.config.kind,
