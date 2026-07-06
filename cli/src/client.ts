@@ -118,6 +118,26 @@ export function connect(
     return null;
   };
 
+  // 服务端用 close(1008, reason) 表达策略性终局（archived/revoked/forbidden），与 web ws.ts 的
+  // FATAL_REASONS 一致：1008 一律停止重连（transient 断线走 1001/1011/1006，服务端不会用 1008）。
+  // 已识别的终局 reason 落成对应 error 帧交给上层映射退出码；未识别的 1008 直接结束帧流（不伪造
+  // error），由上层（watch --follow）识别为异常终止。ErrorCode 无 revoked/forbidden，按 spec 归到
+  // unauthorized；archived 保留自身码。
+  const fatalCloseFrame = (reason: string): ServerFrame | null => {
+    switch (reason) {
+      case "archived":
+        return { type: "error", code: "archived", message: "channel archived" };
+      case "revoked":
+        return { type: "error", code: "unauthorized", message: "token revoked, re-run: party init" };
+      case "forbidden":
+        return { type: "error", code: "unauthorized", message: "channel access forbidden" };
+      case "unauthorized":
+        return { type: "error", code: "unauthorized", message: "unauthorized" };
+      default:
+        return null;
+    }
+  };
+
   const scheduleReconnect = () => {
     const delay = Math.min(base * 2 ** attempt, max);
     attempt++;
@@ -162,9 +182,17 @@ export function connect(
         queue.push(frame);
       }
     };
-    sock.onclose = () => {
+    sock.onclose = (ev) => {
       stopPing();
       if (closed) {
+        queue.end();
+        return;
+      }
+      // 1008 = 服务端策略性终局：停止重连（否则会无限重连一个死频道，issue #29）。
+      if (ev.code === 1008) {
+        closed = true;
+        const fatal = fatalCloseFrame(ev.reason ?? "");
+        if (fatal) queue.push(fatal);
         queue.end();
         return;
       }

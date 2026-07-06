@@ -29,6 +29,10 @@ export const EXIT_TIMEOUT = 2;
 export const EXIT_AUTH = 3;
 export const EXIT_LOOP_GUARD = 4;
 export const EXIT_ARCHIVED = 5;
+// watch --follow 的帧流意外中断（连接层彻底放弃/queue 结束但非超时、非终局 error）。
+// 静默 return 0 会让 supervisor 误判为正常收尾（issue #29：pid 消失、日志 0 字节、无错误），
+// 故单列一个非零码，让外层 supervisor 能看到失败并重启。
+export const EXIT_STREAM_ENDED = 6;
 
 // ---- 基础类型 ----
 

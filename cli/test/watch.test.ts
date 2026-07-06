@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_TIMEOUT } from "@agentparty/shared";
+import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_STREAM_ENDED, EXIT_TIMEOUT } from "@agentparty/shared";
 import { resolveWatchTimeoutSec, runWatch, type WatchOptions } from "../src/commands/watch";
 import { msgFrame, startMockServer, welcomeFrame, type MockServer } from "./mock-server";
 
@@ -226,6 +226,62 @@ describe("runWatch", () => {
       expect(o.lines).toEqual([]);
       s.stop(true);
     }
+  });
+
+  test("terminal close(1008,\"archived\") exits EXIT_ARCHIVED without reconnecting", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0));
+        sock.close(1008, "archived");
+      }
+    });
+    const o = opts({ server: server.url, follow: true, timeoutSec: 0, json: true });
+    expect(await runWatch(o)).toBe(EXIT_ARCHIVED);
+    // 终局 close：客户端不得重连一个死频道
+    expect(server.connections).toBe(1);
+    expect(JSON.parse(o.lines[0]!)).toMatchObject({
+      type: "error",
+      code: "archived",
+      retryable: false,
+    });
+  });
+
+  test("follow stream ending unexpectedly exits EXIT_STREAM_ENDED, not silent 0", async () => {
+    // 服务端用未识别的 1008 直接结束帧流（非终局 error、非 timeout）：连接层放弃，
+    // 迭代器结束。watch --follow 必须机器可读地报告并以非零码退出（issue #29）。
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0));
+        sock.close(1008, "eof");
+      }
+    });
+    const o = opts({ server: server.url, follow: true, timeoutSec: 0, json: true });
+    expect(await runWatch(o)).toBe(EXIT_STREAM_ENDED);
+    expect(server.connections).toBe(1);
+    expect(JSON.parse(o.lines[0]!)).toMatchObject({
+      schema: "agentparty.v1",
+      type: "watch_exited",
+      reason: "stream_ended",
+      channel: "dev",
+    });
+  });
+
+  test("transient drop still reconnects and is not treated as terminal", async () => {
+    server = startMockServer((frame, sock, connIndex) => {
+      if (frame.type !== "hello") return;
+      if (connIndex === 0) {
+        sock.send(welcomeFrame(2));
+        sock.send(msgFrame(1, "first"));
+        sock.close(); // 普通断线（无 1008）→ 应重连
+      } else {
+        sock.send(welcomeFrame(2));
+        sock.send(msgFrame(2, "second"));
+      }
+    });
+    const o = opts({ server: server.url, timeoutSec: 5 });
+    expect(await runWatch(o)).toBe(0);
+    expect(server.hellos).toEqual([0, 1]);
+    expect(o.lines).toEqual(["[1] bob(agent): first", "[2] bob(agent): second"]);
   });
 
   test("cursor callback fires for received messages", async () => {

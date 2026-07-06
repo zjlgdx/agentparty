@@ -3,7 +3,7 @@ import type { ClientFrame } from "@agentparty/shared";
 
 export interface MockSocket {
   send(frame: unknown): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
 }
 
 export interface MockServer {
@@ -42,7 +42,7 @@ export function startMockServer(onFrame: FrameHandler): MockServer {
         if (frame.type === "hello") hellos.push(frame.since);
         const sock: MockSocket = {
           send: (f) => ws.send(JSON.stringify(f)),
-          close: () => ws.close(),
+          close: (code, reason) => ws.close(code, reason),
         };
         onFrame(frame, sock, ws.data.index);
       },

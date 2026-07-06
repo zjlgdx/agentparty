@@ -1,5 +1,5 @@
 // party watch — 补拉错过消息，阻塞等新消息
-import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_TIMEOUT } from "@agentparty/shared";
+import { EXIT_ARCHIVED, EXIT_AUTH, EXIT_LOOP_GUARD, EXIT_STREAM_ENDED, EXIT_TIMEOUT } from "@agentparty/shared";
 import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { connect } from "../client";
 import { loadCursor, resolveChannel, saveCursor } from "../config";
@@ -102,6 +102,17 @@ export async function runWatch(o: WatchOptions): Promise<number> {
   if (timedOut && (o.follow || printed === 0)) {
     out(o.json ? JSON.stringify(jsonFrame({ type: "timeout", channel: o.channel, timeout_sec: o.timeoutSec, ts: nowTs() })) : "TIMEOUT");
     return EXIT_TIMEOUT;
+  }
+  // --follow：迭代器结束却既非超时也非终局 error，意味着连接层彻底放弃 / 帧流意外中断。
+  // 静默 return 0 会让 supervisor 误判为正常收尾 → 空日志静默消失（issue #29）。
+  // 输出机器可读的退出原因并返回非零码，让 supervisor 能看到失败并重启。
+  if (o.follow && !timedOut && code === 0) {
+    if (o.json) {
+      out(JSON.stringify(jsonFrame({ type: "watch_exited", reason: "stream_ended", channel: o.channel, ts: nowTs() })));
+    } else {
+      console.error("watch exited: stream ended unexpectedly");
+    }
+    return EXIT_STREAM_ENDED;
   }
   return code;
 }

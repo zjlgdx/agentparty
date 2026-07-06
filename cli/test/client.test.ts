@@ -141,6 +141,36 @@ describe("ws client", () => {
     expect(conn.cursor).toBe(9);
   });
 
+  test("terminal close(1008) ends the stream with an error frame and does not reconnect", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0));
+        sock.close(1008, "revoked");
+      }
+    });
+    conn = connect(server.url, "ap_tok", "dev", 0, { backoffBaseMs: 20 });
+    const frames = await collect(conn, 2, 3000, false);
+    expect(frames.map((f) => f.type)).toEqual(["welcome", "error"]);
+    expect(frames[1]).toMatchObject({ type: "error", code: "unauthorized" });
+    // queue.end() 后迭代器彻底结束，且不得重连
+    const tail = await collect(conn, 99, 300, false);
+    expect(tail).toEqual([]);
+    expect(server.connections).toBe(1);
+  });
+
+  test("unrecognized 1008 close ends the stream without fabricating an error frame", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0));
+        sock.close(1008, "eof");
+      }
+    });
+    conn = connect(server.url, "ap_tok", "dev", 0, { backoffBaseMs: 20 });
+    const frames = await collect(conn, 99, 500, false);
+    expect(frames.map((f) => f.type)).toEqual(["welcome"]);
+    expect(server.connections).toBe(1);
+  });
+
   test("reconnects with backoff and latest cursor", async () => {
     server = startMockServer((frame, sock, connIndex) => {
       if (frame.type !== "hello") return;
