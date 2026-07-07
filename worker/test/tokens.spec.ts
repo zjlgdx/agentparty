@@ -45,7 +45,9 @@ describe("tokens", () => {
     expect(del.status).toBe(200);
     expect((await api("/api/channels", token)).status).toBe(401);
     expect((await mint(name, "agent")).status).toBe(201);
-  }, 15_000);
+    // 继承 vitest.config 的全局 20_000（此前的 15_000 覆盖在 CI 单 workerd 满载 + 新增 DO
+    // schema 冷启下会偶发超时，见 #43）
+  });
 
   it("404 on revoking an unknown token", async () => {
     const res = await SELF.fetch(`http://ap.test/api/tokens/${uniq("ghost")}`, {
