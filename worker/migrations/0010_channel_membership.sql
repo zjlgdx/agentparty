@@ -1,5 +1,5 @@
 -- Channel membership and human join links (#38).
-CREATE TABLE channel_members (
+CREATE TABLE IF NOT EXISTS channel_members (
   channel_slug TEXT NOT NULL,
   account TEXT NOT NULL,
   added_by TEXT NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE channel_members (
   PRIMARY KEY (channel_slug, account)
 );
 
-CREATE TABLE channel_join_links (
+CREATE TABLE IF NOT EXISTS channel_join_links (
   code TEXT PRIMARY KEY,
   channel_slug TEXT NOT NULL,
   created_by TEXT NOT NULL,
@@ -18,5 +18,5 @@ CREATE TABLE channel_join_links (
   revoked_at INTEGER
 );
 
-CREATE INDEX idx_channel_members_account ON channel_members(account, channel_slug);
-CREATE INDEX idx_channel_join_links_channel ON channel_join_links(channel_slug, created_at);
+CREATE INDEX IF NOT EXISTS idx_channel_members_account ON channel_members(account, channel_slug);
+CREATE INDEX IF NOT EXISTS idx_channel_join_links_channel ON channel_join_links(channel_slug, created_at);
