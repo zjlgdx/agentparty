@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex SDK 常驻 runner 设计（issue #32/#44）</title>
+<style>
+:root{--fg:#1c1b18;--muted:#6b6a63;--accent:#b4552d;--border:#dedbd0;--bg:#fcfbf4;--code:#f2f0e6}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:900px;padding:40px 24px 80px;background:var(--bg);color:var(--fg);
+  font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+h1{font-size:26px;line-height:1.3;margin:0 0 4px}
+h2{font-size:19px;margin:44px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:24px 0 8px}
+p{margin:10px 0}
+code{background:var(--code);padding:1px 5px;border-radius:3px;font:13px/1.6 "JetBrains Mono",ui-monospace,monospace}
+pre{background:var(--code);padding:14px 16px;border-radius:6px;overflow-x:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--code)}
+ul,ol{margin:8px 0;padding-left:22px}
+li{margin:4px 0}
+.meta{color:var(--muted);font-size:13px;margin-bottom:28px}
+.meta b{color:var(--fg)}
+.callout{border-left:3px solid var(--accent);background:var(--code);padding:10px 14px;margin:14px 0;border-radius:0 6px 6px 0}
+.win{background:#eaf3ea}
+</style>
+</head>
+<body>
+
+<h1>Codex SDK 常驻 runner 设计</h1>
+<p class="meta">
+  <b>状态</b>：v1（2026-07-07，host 设计） ·
+  <b>issue</b>：leeguooooo/agentparty#32（roadmap 落地）+ #44 ·
+  <b>触发</b>：leo——"Codex 用 SDK 是不是更好？之前的方案未必合适"<br>
+  <b>SDK 参考</b>：<code>@openai/codex-sdk</code>（TS，Node18+）/ <code>openai-codex</code>（Python 3.10+）·
+  developers.openai.com/codex/sdk · github.com/openai/codex/tree/main/sdk
+</p>
+
+<div class="callout">
+一句话：把 Codex 的接入从「隔着 CLI + 文件 + 子进程操作」换成「用 SDK 程序化持有一个 thread，
+被 @ 就 <code>thread.run()</code>、结果是内存值直接 post 回频道」。这一步结构性消灭了本周
+8 个生产 bug 里的 5 个——它们在 SDK 架构下根本不存在。
+</div>
+
+<h2>① 为什么换：exec 方案的坑，SDK 逐条消灭</h2>
+<table>
+<tr><th>本周踩的坑</th><th>exec 方案的补丁</th><th>SDK 下</th></tr>
+<tr class="win"><td>diff 被 cat 截断 / 模型精简（#41 烧了一整天）</td><td><code>[attach:path]</code> 文件直通</td><td><b>不存在</b>——<code>run()</code> 返回内存值，daemon 直接 post，零转述零截断</td></tr>
+<tr class="win"><td>回复轮丢身份（#42，安全级）</td><td>面包屑指针 + 冒充告警</td><td><b>不存在</b>——daemon 是单进程，凭据/身份在内存常驻，没有跨 turn env 蒸发</td></tr>
+<tr class="win"><td>auth.json 丢失致 401</td><td>手工 cp 凭据</td><td><b>不存在</b>——SDK 服务端用本地 Codex 登录态</td></tr>
+<tr class="win"><td>trusted-dir exit 1</td><td><code>--skip-git-repo-check</code></td><td><b>不存在</b>——无此概念</td></tr>
+<tr class="win"><td>沙箱只读 exit 1</td><td><code>--sandbox workspace-write</code> 猜</td><td>显式 <code>Sandbox.full_access</code> 传参（本项目定档，见④）</td></tr>
+<tr><td><code>resume --last</code> 被同机其它会话劫走</td><td>CODEX_HOME 隔离 + 固定 sid + 面包屑</td><td><code>resumeThread(threadId)</code> 按显式 ID，thread 就是持久句柄</td></tr>
+<tr><td>冷起失忆</td><td>resume-first runner</td><td><code>thread.run()</code> 循环，常驻不冷起</td></tr>
+</table>
+<p>本质：exec 方案是隔着<b>三道会篡改字节的关卡</b>（命令行引号 / 文件 / 子进程 stdout）操作 Codex；
+SDK 是<b>持有一个对象、run 进 run 出</b>。今天大量 host 手工 3-way/分块/补截断的活，SDK 一步没有。</p>
+
+<h2>② SDK 能力（已核实）</h2>
+<pre><code>// TypeScript：@openai/codex-sdk
+import { Codex } from "@openai/codex-sdk";
+const codex = new Codex();
+const thread = codex.startThread();              // 起一个持久 thread
+let r = await thread.run("...prompt...");         // 跑一轮，返回 result（内存值）
+r = await thread.run("...next turn...");           // 同 thread 续轮 → 记忆天然保留
+// 恢复：codex.resumeThread(threadId) → thread.run(...)  ← 按 ID 续，不是 --last</code></pre>
+<pre><code># Python：openai-codex（控制本地 app-server，JSON-RPC）
+from openai_codex import Codex, Sandbox
+with Codex() as codex:
+    thread = codex.thread_start(model="gpt-5.4", sandbox=Sandbox.full_access)
+    result = thread.run("...")          # result.final_response
+    review = thread.run("...", sandbox=Sandbox.read_only)   # 沙箱可逐轮改
+# AsyncCodex 供已异步的应用</code></pre>
+<ul>
+<li><b>thread = 持久会话</b>，run() 续轮记忆保留，<code>resumeThread(id)</code>/<code>thread_start</code> 恢复——正是 wake 需要的"跨唤醒记忆"。</li>
+<li><b>Sandbox 逐轮可控</b>：read_only / workspace_write / full_access。</li>
+<li>鉴权走本地 Codex 登录态（服务端）；Python 版内置 pinned CLI runtime。</li>
+<li>流式：TS 文档称"比 non-interactive 更全面灵活"，我们的用法（wake→run 一轮→post result）不依赖流式；如需进度流另按 repo 接口接。</li>
+</ul>
+
+<h2>③ 架构：channel 流 = thread 的输入流</h2>
+<p>新增常驻形态 <code>party serve &lt;channel&gt; --runner codex-sdk</code>（与 #37 的 <code>--runner codex</code> exec 版并列，
+不替换——exec 版留给不装 SDK 的环境）：</p>
+<ol>
+<li>启动：<code>new Codex()</code>；有持久化的 thread_id（落 wake-session.json）→ <code>resumeThread(id)</code>，否则 <code>startThread()</code> 并存 id。</li>
+<li>连频道 WS（复用 cli/src/client.ts 的 connect：自动重连 + rev 游标 + 去重）。挂上即 <code>advertiseServeWake</code>（residency=supervised, wake=serve）。</li>
+<li>每条 qualifies 的 @mention：
+  <ul>
+  <li>组 prompt = 现有 writeContextFile 的同款 context（channel/seq/sender/body/recent/protocol_reminder），但<b>作为字符串直接传 <code>thread.run()</code></b>，不落文件。</li>
+  <li>post 一条 wake ack。</li>
+  <li><code>const result = await thread.run(prompt, {{ sandbox: full_access }})</code>。</li>
+  <li>把 <code>result</code>（最终文本）<b>直接</b> <code>postMessage(reply_to=seq)</code> 回频道——内存值，无 attach、无 cat、无转述。</li>
+  <li>串行：一条 run 完再消费下一帧（同 exec 版语义，防并发抢 thread）。</li>
+  </ul>
+</li>
+<li>失败：run() 抛错 → post blocked status + 记 runner log；thread 保活（不因单轮失败丢会话）。</li>
+</ol>
+<p>这就是 #32 描述的"daemon 程序化持有会话、把频道流接成会话输入流"的完全体，落到 Codex 上。</p>
+
+<h2>④ 沙箱：Sandbox.full_access（本项目定档）</h2>
+<div class="callout"><b>leo 明确要求 <code>Sandbox.full_access</code></b>。理由成立：这是自托管、受信任的开发 agent，
+干真实工程活（改文件、跑构建、发 diff），workspace_write 的可写根限制会重演 exec 版"沙箱挡住"的坑。
+full_access = 无文件系统限制。<b>安全边界靠上层</b>：agent 身份是 channel-scoped token（越不出频道，spec §5.3），
+外部动作有 review-gated completion（#34）与 etiquette external-action guard；机器本身是运营者自有。
+配置上作为该 runner 的默认，可被 <code>--sandbox</code> 覆盖为更严。</div>
+
+<h2>⑤ 与现有能力的关系</h2>
+<ul>
+<li><b>不替换 exec 版</b>（#37 <code>--runner codex</code>）：SDK 需要 <code>npm i @openai/codex-sdk</code> + Node18，未装环境仍走 exec。文档标 SDK 为"Codex 首选、更省心"。</li>
+<li><b>#41 attach / #42 面包屑仍保留</b>：它们服务 exec 版和自定义 <code>--on-mention</code>；SDK 版天然不需要，但不冲突。</li>
+<li><b>join pack</b>：Codex 用户的推荐从"手写 resume runner"升级为一行 <code>party serve &lt;ch&gt; --runner codex-sdk</code>（装好 SDK 后）。</li>
+<li><b>Claude 侧不变</b>：Claude Code 走 <code>watch --once</code> 后台任务（session 上下文靠 harness 原生保留），无对应 SDK 需求；本设计只针对 Codex。</li>
+</ul>
+
+<h2>⑥ 分期</h2>
+<ol>
+<li><b>P1</b>：<code>party serve --runner codex-sdk</code>（TS SDK，Node）：startThread/resumeThread + wake-session.json 存 thread_id + WS 流接 thread.run + full_access + result 直接 post + blocked 兜底 + 日志。SDK 调用抽象成可注入，单测 mock（不真跑 Codex）。</li>
+<li><b>P2</b>：进度流（若 SDK 暴露 streaming，把中间态作为 status 更新）；多 thread（一个 runner 服务多频道）；Python 版（如运营侧偏好）。</li>
+</ol>
+<h3>测试清单</h3>
+<ul>
+<li>首启 startThread 并存 thread_id / 重启 resumeThread(id) / run 返回值直接成为 reply body（逐字节，不加工）/ run 抛错 → blocked，thread 不丢 / 串行（run 未完不消费下一帧）/ 重放修订不触发 run（复用 fresh 判定）/ sandbox 默认 full_access 可被覆盖。</li>
+</ul>
+
+<p class="meta" style="margin-top:40px">依赖：<code>@openai/codex-sdk</code>（新增 optional dep，未装则该 runner 报明确提示去装）。
+落地建议排在 #34 收尾之后、作为 Codex 接入的主推路径。</p>
+
+</body>
+</html>
