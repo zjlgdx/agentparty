@@ -685,7 +685,11 @@ app.get("/api/channels", async (c) => {
         );
   const visible = results.filter((row) => canAccessChannel(identity, row, memberSlugs.has(row.slug)));
   const channels = await Promise.all(
-    visible.map(async ({ created_by, owner_account, ...row }) => {
+    visible.map(async (full) => {
+      // can_moderate：当前身份能否管理（转可见性/踢人/归档）。不回 owner 身份本身，只回布尔，
+      // 前端据此决定渲不渲染可见性切换等管理控件（非 owner 不该看见会 403 的按钮）。
+      const canModerate = isChannelModerator(identity, full);
+      const { created_by, owner_account, ...row } = full;
       let summary: ChannelSummary = { last: null, presence: [] };
       try {
         const stub = await getServerByName(c.env.CHANNELS, row.slug);
@@ -696,7 +700,7 @@ app.get("/api/channels", async (c) => {
       } catch {
         // do 不可达时列表仍可用，摘要降级为空
       }
-      return { ...row, last_message: summary.last, presence: summary.presence };
+      return { ...row, can_moderate: canModerate, last_message: summary.last, presence: summary.presence };
     }),
   );
   return c.json({ channels });

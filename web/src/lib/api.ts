@@ -103,6 +103,9 @@ export interface ChannelInfo {
   mode: "normal" | "party";
   // 公开/私有（spec §3.1）：默认 private，旧 worker 响应缺此字段时按私有处理（不显 PUBLIC 徽章）。
   visibility: "public" | "private";
+  // 当前身份能否管理本频道（转可见性/踢人/归档）。服务端按 isChannelModerator 算好的布尔，
+  // 不含 owner 身份本身。旧 worker 缺此字段 → undefined，前端按「不可管理」处理（不渲染管理控件）。
+  can_moderate?: boolean;
   created_at: number;
   archived_at: number | null;
   last_message: ChannelLastMessage | null;

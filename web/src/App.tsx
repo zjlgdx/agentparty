@@ -379,6 +379,8 @@ export function App() {
               // 只有登录人类账号会话（非只读分享链接）才能铸 agent（worker 要求 role==="human"）
               canMintAgent={!isShareMode() && me?.role === "human"}
               canResetGuard={!isShareMode() && me?.role === "human"}
+              // 可见性切换是 owner 专属：服务端算好的 can_moderate 决定渲不渲染（非 owner 不显会 403 的按钮）
+              canModerate={channels?.find((c) => c.slug === slug)?.can_moderate === true}
               agentNamePrefix={(me?.email ?? me?.name ?? slug).split("@")[0] ?? slug}
               inviterName={me?.name ?? slug}
               onAuthFailed={onAuthFailed}

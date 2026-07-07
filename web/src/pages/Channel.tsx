@@ -35,6 +35,7 @@ interface Props {
   // 有可写人类账号会话（me.role==="human" 且非分享链接）才允许铸 agent（spec §10）
   canMintAgent: boolean;
   canResetGuard: boolean;
+  canModerate: boolean; // owner/admin 才 true：决定是否渲染可见性切换等管理控件（issue #38）
   agentNamePrefix: string; // 生成 agent 名的前缀来源（email/name 前缀，退回 slug）
   inviterName: string; // 当前邀请人的频道身份名，接入包报到时 @ 他
   onAuthFailed(message: string): void;
@@ -473,6 +474,7 @@ export function ChannelPage({
   shareMode,
   canMintAgent,
   canResetGuard,
+  canModerate,
   agentNamePrefix,
   inviterName,
   onAuthFailed,
@@ -862,13 +864,15 @@ export function ChannelPage({
       {canMintAgent && !state.archived && (
         <div className="chan-toolbar">
           <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} inviterName={inviterName} />
-          <VisibilityToggle
-            slug={slug}
-            token={token}
-            isPublic={localPublic}
-            onChanged={setLocalPublic}
-            onAuthFailed={onAuthFailed}
-          />
+          {canModerate && (
+            <VisibilityToggle
+              slug={slug}
+              token={token}
+              isPublic={localPublic}
+              onChanged={setLocalPublic}
+              onAuthFailed={onAuthFailed}
+            />
+          )}
         </div>
       )}
       {/* chat-first：这些协调/元信息面板默认折叠，避免把核心对话流挤出首屏。展开查看 digest/过滤/host board 等。 */}
