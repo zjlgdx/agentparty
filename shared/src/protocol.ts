@@ -168,6 +168,7 @@ export type ErrorCode =
   | "rate_limited"
   | "too_large"
   | "loop_guard"
+  | "workflow_guard"
   | "archived"
   | "not_found";
 
@@ -349,6 +350,8 @@ export interface MsgFrame {
   state: StatusState | null;
   note: string | null;
   status: StatusEvent | null;
+  /** 普通消息在投递时归属到的 workflow；status 消息仍以 status.workflow 为准。 */
+  workflow_ref?: StatusWorkflow;
   role?: CollaborationRole;
   role_source?: CollaborationRoleSource;
   completion_artifact?: CompletionArtifact;

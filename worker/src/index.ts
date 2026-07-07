@@ -69,6 +69,8 @@ const AP_FORWARD_HEADERS = [
   "x-ap-channel-kind",
   "x-ap-completion-gate",
   "x-ap-completion-review-policy",
+  "x-ap-workflow-guard-enabled",
+  "x-ap-workflow-guard-limit",
   "x-ap-host",
   "x-ap-archived",
   "x-ap-archive-at",
@@ -242,7 +244,9 @@ const requireBearer = createMiddleware<AppContext>(async (c, next) => {
 async function loadChannel(db: D1Database, slug: string) {
   return db
     .prepare(
-      "SELECT slug, kind, mode, archived_at, created_by, visibility, owner_account, completion_gate, completion_review_policy FROM channels WHERE slug = ?",
+      `SELECT slug, kind, mode, archived_at, created_by, visibility, owner_account,
+              completion_gate, completion_review_policy, workflow_guard_enabled, workflow_guard_limit
+         FROM channels WHERE slug = ?`,
     )
     .bind(slug)
     .first<{
@@ -255,6 +259,8 @@ async function loadChannel(db: D1Database, slug: string) {
       owner_account: string | null;
       completion_gate: string;
       completion_review_policy: string;
+      workflow_guard_enabled: number;
+      workflow_guard_limit: number;
     }>();
 }
 
@@ -316,14 +322,31 @@ async function recentNonMemberSpeakers(db: D1Database, env: AppEnv, slug: string
 }
 
 // do 侧按 meta 缓存 mode/kind/host（loop guard 分档、temp 归档、webhook permalink 都要用）
-function channelHeaders(channel: { kind: string; mode: string; completion_gate?: string; completion_review_policy?: string }, requestUrl: string) {
+function channelHeaders(
+  channel: {
+    kind: string;
+    mode: string;
+    completion_gate?: string;
+    completion_review_policy?: string;
+    workflow_guard_enabled?: number;
+    workflow_guard_limit?: number;
+  },
+  requestUrl: string,
+) {
   return {
     "x-ap-mode": channel.mode,
     "x-ap-channel-kind": channel.kind,
     "x-ap-completion-gate": channel.completion_gate ?? "off",
     "x-ap-completion-review-policy": channel.completion_review_policy ?? "sender",
+    "x-ap-workflow-guard-enabled": String(channel.workflow_guard_enabled ?? 1),
+    "x-ap-workflow-guard-limit": String(channel.workflow_guard_limit ?? 30),
     "x-ap-host": new URL(requestUrl).host,
   };
+}
+
+async function canConfigureChannel(db: D1Database, identity: TokenIdentity, channel: LoadedChannel): Promise<boolean> {
+  if (isChannelModerator(identity, channel)) return true;
+  return (await loadAssignedRole(db, channel.slug, identity.name)) === "host";
 }
 
 async function loadAssignedRole(db: D1Database, slug: string, name: string): Promise<CollaborationRole | null> {
@@ -1293,6 +1316,40 @@ app.put("/api/channels/:slug/completion-gate", async (c) => {
   return c.json({ gate, policy });
 });
 
+app.put("/api/channels/:slug/workflow-guard", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (!(await canConfigureChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "only channel moderators or hosts can configure workflow guard"), 403);
+  }
+  if (channel.archived_at !== null) {
+    return c.json(errorBody("archived", "channel is archived"), 410);
+  }
+  const body = (await c.req.json().catch(() => null)) as { enabled?: unknown; limit?: unknown } | null;
+  if (typeof body?.enabled !== "boolean") {
+    return c.json(errorBody("bad_request", "enabled must be boolean"), 400);
+  }
+  const limit = body.limit === undefined ? channel.workflow_guard_limit : positiveInt(body.limit);
+  if (limit === null || limit > 1000) {
+    return c.json(errorBody("bad_request", "limit must be an integer between 1 and 1000"), 400);
+  }
+  const enabled = body.enabled ? 1 : 0;
+  await c.env.DB.prepare("UPDATE channels SET workflow_guard_enabled = ?, workflow_guard_limit = ? WHERE slug = ?")
+    .bind(enabled, limit, slug)
+    .run();
+  const updated = { ...channel, workflow_guard_enabled: enabled, workflow_guard_limit: limit };
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  await stub.fetch(
+    new Request("https://do/internal/init", {
+      method: "POST",
+      headers: { "x-partykit-room": slug, ...channelHeaders(updated, c.req.url) },
+    }),
+  );
+  return c.json({ enabled: body.enabled, limit });
+});
+
 app.post("/api/channels/:slug/messages/:seq/review", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
@@ -1581,6 +1638,29 @@ app.post("/api/channels/:slug/reset-guard", async (c) => {
   );
 });
 
+app.post("/api/channels/:slug/workflows/:workflow_id/reset-guard", async (c) => {
+  const slug = c.req.param("slug");
+  const workflowId = c.req.param("workflow_id");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (identity.kind !== "human" || !(await canConfigureChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "only a human moderator or host can reset workflow guard"), 403);
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(workflowId)) {
+    return c.json(errorBody("bad_request", "valid workflow_id required"), 400);
+  }
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  const res = await stub.fetch(
+    new Request(`https://do/internal/workflows/${encodeURIComponent(workflowId)}/reset-guard`, {
+      method: "POST",
+      headers: { "x-partykit-room": slug },
+    }),
+  );
+  if (!res.ok) return c.json(errorBody("unavailable", "workflow guard reset failed"), 503);
+  return c.json({ ok: true, workflow_id: workflowId });
+});
+
 app.get("/api/channels/:slug/ws", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
     return c.json(errorBody("bad_request", "websocket upgrade required"), 426);
@@ -1627,6 +1707,8 @@ app.get("/api/channels/:slug/ws", async (c) => {
   fwd.headers.set("x-ap-channel-kind", channel.kind);
   fwd.headers.set("x-ap-completion-gate", channel.completion_gate);
   fwd.headers.set("x-ap-completion-review-policy", channel.completion_review_policy);
+  fwd.headers.set("x-ap-workflow-guard-enabled", String(channel.workflow_guard_enabled));
+  fwd.headers.set("x-ap-workflow-guard-limit", String(channel.workflow_guard_limit));
   fwd.headers.set("x-ap-host", new URL(c.req.url).host);
   // 无条件写：未归档也显式置 "0"，堵住"客户端注入 1、未归档分支不覆盖"的透传
   fwd.headers.set("x-ap-archived", channel.archived_at !== null ? "1" : "0");

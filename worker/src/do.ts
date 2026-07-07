@@ -90,6 +90,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   rate_limited: 429,
   too_large: 413,
   loop_guard: 409,
+  workflow_guard: 409,
   archived: 410,
   not_found: 404,
 };
@@ -637,6 +638,30 @@ interface WebhookRow {
   filter: WebhookFilter;
 }
 
+interface WorkflowGuardRow {
+  workflow_id: string;
+  kind: WorkflowKind;
+  run_id: string | null;
+  step_id: string | null;
+  state: StatusState | null;
+  count_since_progress: number;
+  no_progress: number;
+  blocked_seq: number | null;
+  last_progress_seq: number | null;
+  last_counted_seq: number | null;
+  initiator_name: string | null;
+  host_name: string | null;
+  terminal: number;
+  terminal_seq: number | null;
+  updated_at: number;
+}
+
+interface WorkflowGuardDecision {
+  workflow: StatusWorkflow;
+  progressed: boolean;
+  countable: boolean;
+}
+
 function toInt(value: string | null, fallback: number): number {
   const n = Number.parseInt(value ?? "", 10);
   return Number.isFinite(n) ? n : fallback;
@@ -681,6 +706,7 @@ export class ChannelDO extends Server<Env> {
       status_context_json TEXT,
       status_decision_json TEXT,
       status_workflow_json TEXT,
+      message_workflow_json TEXT,
       sender_role TEXT,
       sender_role_source TEXT,
       completion_artifact_json TEXT,
@@ -716,6 +742,7 @@ export class ChannelDO extends Server<Env> {
       "ALTER TABLE messages ADD COLUMN status_context_json TEXT",
       "ALTER TABLE messages ADD COLUMN status_decision_json TEXT",
       "ALTER TABLE messages ADD COLUMN status_workflow_json TEXT",
+      "ALTER TABLE messages ADD COLUMN message_workflow_json TEXT",
       "ALTER TABLE messages ADD COLUMN sender_role TEXT",
       "ALTER TABLE messages ADD COLUMN sender_role_source TEXT",
       "ALTER TABLE messages ADD COLUMN completion_artifact_json TEXT",
@@ -839,6 +866,28 @@ export class ChannelDO extends Server<Env> {
       new_body TEXT,
       created_at INTEGER NOT NULL
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS workflow_guard_state (
+      workflow_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      run_id TEXT,
+      step_id TEXT,
+      state TEXT,
+      count_since_progress INTEGER NOT NULL DEFAULT 0,
+      no_progress INTEGER NOT NULL DEFAULT 0,
+      blocked_seq INTEGER,
+      last_progress_seq INTEGER,
+      last_counted_seq INTEGER,
+      initiator_name TEXT,
+      host_name TEXT,
+      latest_pending_completion_seq INTEGER,
+      terminal INTEGER NOT NULL DEFAULT 0,
+      terminal_seq INTEGER,
+      updated_at INTEGER NOT NULL
+    )`);
+    sql.exec("CREATE INDEX IF NOT EXISTS workflow_guard_state_updated_idx ON workflow_guard_state(updated_at)");
+    sql.exec(
+      "CREATE INDEX IF NOT EXISTS workflow_guard_state_no_progress_idx ON workflow_guard_state(no_progress, updated_at)",
+    );
     this.ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair('{"type":"ping"}', '{"type":"pong"}'),
     );
@@ -1171,6 +1220,14 @@ export class ChannelDO extends Server<Env> {
     if (completionReviewPolicy === "sender" || completionReviewPolicy === "owner") {
       this.setMeta("completion_review_policy", completionReviewPolicy);
     }
+    const workflowGuardEnabled = h.get("x-ap-workflow-guard-enabled");
+    if (workflowGuardEnabled === "0" || workflowGuardEnabled === "1") {
+      this.setMeta("workflow_guard_enabled", workflowGuardEnabled);
+    }
+    const workflowGuardLimit = Number(h.get("x-ap-workflow-guard-limit") ?? "");
+    if (Number.isInteger(workflowGuardLimit) && workflowGuardLimit > 0) {
+      this.setMeta("workflow_guard_limit", String(Math.min(workflowGuardLimit, 1000)));
+    }
     if (host) this.setMeta("host", host);
   }
 
@@ -1186,7 +1243,7 @@ export class ChannelDO extends Server<Env> {
   // spec §15：对每个 webhook 判 filter → 立即尝试投递，失败入队由 alarm 重试
   private async dispatchWebhooks(msg: MsgFrame) {
     // system 帧默认不触发 webhook，防止失败风暴自激；loop guard 例外，因为它需要唤醒人类。
-    if (msg.sender.name === "system" && !this.isLoopGuardStatus(msg)) return;
+    if (msg.sender.name === "system" && !this.isLoopGuardStatus(msg) && !this.isWorkflowGuardStatus(msg)) return;
     const hooks = this.ctx.storage.sql
       .exec("SELECT name, url, secret, filter FROM webhooks")
       .toArray()
@@ -1262,6 +1319,15 @@ export class ChannelDO extends Server<Env> {
 
   private isLoopGuardStatus(msg: MsgFrame): boolean {
     return msg.kind === "status" && msg.sender.name === "system" && msg.body.startsWith("loop guard tripped:");
+  }
+
+  private isWorkflowGuardStatus(msg: MsgFrame): boolean {
+    return (
+      msg.kind === "status" &&
+      msg.sender.name === "system" &&
+      msg.body.startsWith("workflow guard tripped:") &&
+      msg.status?.workflow !== undefined
+    );
   }
 
   // 短超时 POST；Bearer = 注册时的 secret，HMAC 签 payload 供接收方校验（spec §15）
@@ -1366,7 +1432,12 @@ export class ChannelDO extends Server<Env> {
   }
 
   // 3 次重试全败后向频道插一条 system status，让人看得见投递失败
-  private insertSystemStatus(note: string, now: number, notifyWebhooks = false) {
+  private insertSystemStatus(
+    note: string,
+    now: number,
+    notifyWebhooks = false,
+    options: { mentions?: string[]; workflow?: StatusWorkflow; broadcast?: boolean } = {},
+  ): MsgFrame {
     const seq = this.lastSeq() + 1;
     const status: StatusEvent = {
       owner: "system",
@@ -1375,17 +1446,20 @@ export class ChannelDO extends Server<Env> {
       summary_seq: null,
       blocked_reason: note,
       updated_at: now,
+      ...(options.workflow === undefined ? {} : { workflow: options.workflow }),
     };
     this.ctx.storage.sql.exec(
       `INSERT INTO messages (
          seq, sender_name, sender_kind, kind, body, mentions_json, reply_to,
-         state, note, status_scope_json, status_summary_seq, status_blocked_reason, ts
+         state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_workflow_json, ts
        )
-       VALUES (?, 'system', 'agent', 'status', ?, '[]', NULL, 'blocked', ?, '[]', NULL, ?, ?)`,
+       VALUES (?, 'system', 'agent', 'status', ?, ?, NULL, 'blocked', ?, '[]', NULL, ?, ?, ?)`,
       seq,
       note,
+      JSON.stringify(options.mentions ?? []),
       note,
       note,
+      options.workflow === undefined ? null : JSON.stringify(options.workflow),
       now,
     );
     const frame: MsgFrame = {
@@ -1394,15 +1468,16 @@ export class ChannelDO extends Server<Env> {
       sender: { name: "system", kind: "agent" },
       kind: "status",
       body: note,
-      mentions: [],
+      mentions: options.mentions ?? [],
       reply_to: null,
       state: "blocked",
       note,
       status,
       ts: now,
     };
-    this.broadcastFrame(frame);
+    if (options.broadcast !== false) this.broadcastFrame(frame);
     if (notifyWebhooks) this.ctx.waitUntil(this.dispatchWebhooks(frame));
+    return frame;
   }
 
   private insertReviewerReply(identity: Identity, body: string, mentions: string[], replyTo: number, now: number): MsgFrame {
@@ -2014,6 +2089,15 @@ export class ChannelDO extends Server<Env> {
       this.clearLoopGuardState();
       return Response.json({ ok: true });
     }
+    const resetWorkflowGuardMatch = url.pathname.match(/^\/internal\/workflows\/([^/]+)\/reset-guard$/);
+    if (resetWorkflowGuardMatch && request.method === "POST") {
+      const workflowId = decodeURIComponent(resetWorkflowGuardMatch[1] ?? "");
+      if (!WORKFLOW_ID_RE.test(workflowId)) {
+        return Response.json({ error: { code: "bad_request", message: "valid workflow_id required" } }, { status: 400 });
+      }
+      this.resetWorkflowGuard(workflowId);
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/internal/archive" && request.method === "POST") {
       // do 自己记下归档态（handleSend/onConnect 的权威依据），再踢存活连接
       this.cacheChannelMeta(request.headers, request.headers.get("x-ap-host"));
@@ -2058,6 +2142,17 @@ export class ChannelDO extends Server<Env> {
     if (byteLength(payload) > BODY_LIMIT) {
       return { ok: false, code: "too_large", message: `body exceeds ${BODY_LIMIT} bytes` };
     }
+    const workflowGuard = this.workflowGuardDecision(identity, frame);
+    if (workflowGuard !== null) {
+      const row = this.workflowGuardRow(workflowGuard.workflow.workflow_id);
+      if ((row?.no_progress ?? 0) === 1 && !workflowGuard.progressed) {
+        return {
+          ok: false,
+          code: "workflow_guard",
+          message: this.workflowGuardBlockedMessage(workflowGuard.workflow.workflow_id, row?.blocked_seq ?? null),
+        };
+      }
+    }
     const loopGuard = identity.kind === "agent" ? this.loopGuardMessage(identity.name) : null;
     if (loopGuard !== null) {
       this.alertLoopGuard(loopGuard);
@@ -2078,6 +2173,7 @@ export class ChannelDO extends Server<Env> {
     const sender: Sender = senderFromIdentity(identity);
     const hostDecision = frame.kind === "status" ? hostDecisionFromSend(frame.decision, identity.name) : undefined;
     const workflow = frame.kind === "status" ? statusWorkflowFromSend(frame.workflow) : undefined;
+    const messageWorkflow = workflowGuard?.workflow;
     const status: StatusEvent | null =
       frame.kind === "status"
         ? {
@@ -2155,6 +2251,7 @@ export class ChannelDO extends Server<Env> {
                   },
                 }
               : {}),
+            ...(messageWorkflow === undefined ? {} : { workflow_ref: messageWorkflow }),
             ts: now,
           }
         : {
@@ -2176,11 +2273,11 @@ export class ChannelDO extends Server<Env> {
       `INSERT INTO messages (
          seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
-         status_decision_json, status_workflow_json,
+         status_decision_json, status_workflow_json, message_workflow_json,
          sender_role, sender_role_source, completion_artifact_json, completion_review_state, completion_review_policy,
          completion_review_replaces_seq, ts
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       seq,
       identity.name,
       identity.kind,
@@ -2198,6 +2295,7 @@ export class ChannelDO extends Server<Env> {
       status?.context === undefined ? null : JSON.stringify(status.context),
       hostDecision === undefined ? null : JSON.stringify(hostDecision),
       workflow === undefined ? null : JSON.stringify(workflow),
+      messageWorkflow === undefined ? null : JSON.stringify(messageWorkflow),
       effectiveRole ?? null,
       roleSource ?? null,
       frame.kind === "message" && frame.completion_artifact !== undefined
@@ -2223,11 +2321,13 @@ export class ChannelDO extends Server<Env> {
       if (replacedRow) replacedUpdate = this.messageUpdate("review", identity, this.rowToFrame(replacedRow), now);
     }
     this.linkWakeResume(identity.name, msg);
+    const workflowGuardFrame = this.applyWorkflowGuardAfterSend(identity, msg, workflowGuard, now);
     if (identity.kind === "agent") {
       this.setMeta("agent_streak", String(this.agentStreak() + 1));
       this.setMeta(this.agentCountKey(identity.name), String(this.agentCount(identity.name) + 1));
     } else {
       this.clearLoopGuardState();
+      this.clearWorkflowGuards();
     }
     if (seq % 100 === 0) {
       sql.exec(
@@ -2237,6 +2337,7 @@ export class ChannelDO extends Server<Env> {
     }
 
     const frames: ServerFrame[] = replacedUpdate === undefined ? [msg] : [msg, replacedUpdate];
+    if (workflowGuardFrame !== undefined) frames.push(workflowGuardFrame);
     if (frame.kind === "status") {
       const wakeProvided = frame.wake !== undefined ? 1 : 0;
       sql.exec(
@@ -2313,6 +2414,259 @@ export class ChannelDO extends Server<Env> {
         targetName,
       );
     }
+  }
+
+  private workflowGuardEnabled(): boolean {
+    return this.getMeta("workflow_guard_enabled") !== "0";
+  }
+
+  private workflowGuardLimit(): number {
+    const configured = Number(this.getMeta("workflow_guard_limit") ?? "");
+    return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 1000) : 30;
+  }
+
+  private workflowGuardRow(workflowId: string): WorkflowGuardRow | null {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT * FROM workflow_guard_state WHERE workflow_id = ?", workflowId)
+      .toArray();
+    if (rows.length === 0) return null;
+    const r = rows[0]!;
+    return {
+      workflow_id: String(r.workflow_id),
+      kind: String(r.kind) as WorkflowKind,
+      run_id: r.run_id === null || r.run_id === undefined ? null : String(r.run_id),
+      step_id: r.step_id === null || r.step_id === undefined ? null : String(r.step_id),
+      state: r.state === null || r.state === undefined ? null : (String(r.state) as StatusState),
+      count_since_progress: Number(r.count_since_progress),
+      no_progress: Number(r.no_progress),
+      blocked_seq: r.blocked_seq === null || r.blocked_seq === undefined ? null : Number(r.blocked_seq),
+      last_progress_seq: r.last_progress_seq === null || r.last_progress_seq === undefined ? null : Number(r.last_progress_seq),
+      last_counted_seq: r.last_counted_seq === null || r.last_counted_seq === undefined ? null : Number(r.last_counted_seq),
+      initiator_name: r.initiator_name === null || r.initiator_name === undefined ? null : String(r.initiator_name),
+      host_name: r.host_name === null || r.host_name === undefined ? null : String(r.host_name),
+      terminal: Number(r.terminal),
+      terminal_seq: r.terminal_seq === null || r.terminal_seq === undefined ? null : Number(r.terminal_seq),
+      updated_at: Number(r.updated_at),
+    };
+  }
+
+  private workflowProgressed(workflow: StatusWorkflow, state: StatusState, row: WorkflowGuardRow | null): boolean {
+    return (
+      row === null ||
+      row.run_id !== workflow.run_id ||
+      row.step_id !== workflow.step_id ||
+      row.state !== state
+    );
+  }
+
+  private workflowFromReply(replyTo: number | null): StatusWorkflow | undefined {
+    if (replyTo === null) return undefined;
+    const rows = this.ctx.storage.sql
+      .exec("SELECT message_workflow_json, status_workflow_json FROM messages WHERE seq = ?", replyTo)
+      .toArray();
+    if (rows.length === 0) return undefined;
+    return (
+      parseStoredStatusWorkflow(rows[0]!.message_workflow_json) ??
+      parseStoredStatusWorkflow(rows[0]!.status_workflow_json)
+    );
+  }
+
+  private currentWorkflowForSender(name: string): StatusWorkflow | undefined {
+    const rows = this.ctx.storage.sql
+      .exec("SELECT status_workflow_json FROM presence WHERE name = ? AND state != 'offline'", name)
+      .toArray();
+    return rows.length > 0 ? parseStoredStatusWorkflow(rows[0]!.status_workflow_json) : undefined;
+  }
+
+  private workflowGuardDecision(identity: Identity, frame: SendFrame): WorkflowGuardDecision | null {
+    if (!this.workflowGuardEnabled()) return null;
+    if (identity.kind !== "agent") return null;
+    if (frame.kind === "status") {
+      const workflow = statusWorkflowFromSend(frame.workflow);
+      if (workflow === undefined) return null;
+      const row = this.workflowGuardRow(workflow.workflow_id);
+      return {
+        workflow,
+        progressed: this.workflowProgressed(workflow, frame.state, row),
+        countable: row !== null && !this.workflowProgressed(workflow, frame.state, row),
+      };
+    }
+    const workflow = this.workflowFromReply(frame.reply_to) ?? this.currentWorkflowForSender(identity.name);
+    if (workflow === undefined) return null;
+    return { workflow, progressed: false, countable: true };
+  }
+
+  private activeHostName(): string | null {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT name FROM presence
+          WHERE role = 'host' AND state != 'offline'
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+      )
+      .toArray();
+    return rows.length > 0 ? String(rows[0]!.name) : null;
+  }
+
+  private workflowGuardBlockedMessage(workflowId: string, blockedSeq: number | null): string {
+    return `workflow ${workflowId} is blocked by workflow guard${blockedSeq === null ? "" : ` at seq ${blockedSeq}`}; send a progress status or ask a human to reset it`;
+  }
+
+  private applyWorkflowGuardAfterSend(
+    identity: Identity,
+    msg: MsgFrame,
+    decision: WorkflowGuardDecision | null,
+    now: number,
+  ): MsgFrame | undefined {
+    if (identity.kind !== "agent" || decision === null) return undefined;
+    const row = this.workflowGuardRow(decision.workflow.workflow_id);
+    const hostName = this.activeHostName() ?? row?.host_name ?? null;
+    if (msg.kind === "status" && msg.state === "done") {
+      this.upsertWorkflowGuardProgress(decision.workflow, msg.state, msg.seq, identity.name, hostName, now, true);
+      this.pruneWorkflowGuardState();
+      return undefined;
+    }
+    if (msg.kind === "status" && decision.progressed) {
+      this.upsertWorkflowGuardProgress(decision.workflow, msg.state ?? "working", msg.seq, identity.name, hostName, now, false);
+      this.pruneWorkflowGuardState();
+      return undefined;
+    }
+    if (!decision.countable) return undefined;
+    const nextCount = (row?.count_since_progress ?? 0) + 1;
+    const shouldTrip = (row?.no_progress ?? 0) === 0 && nextCount >= this.workflowGuardLimit();
+    const blockedSeq = shouldTrip ? msg.seq : row?.blocked_seq ?? null;
+    const trackedState = msg.kind === "status" ? msg.state : row?.state ?? null;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO workflow_guard_state (
+         workflow_id, kind, run_id, step_id, state, count_since_progress, no_progress,
+         blocked_seq, last_progress_seq, last_counted_seq, initiator_name, host_name,
+         terminal, terminal_seq, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+       ON CONFLICT(workflow_id) DO UPDATE SET
+         kind = excluded.kind,
+         run_id = excluded.run_id,
+         step_id = excluded.step_id,
+         state = excluded.state,
+         count_since_progress = excluded.count_since_progress,
+         no_progress = excluded.no_progress,
+         blocked_seq = COALESCE(workflow_guard_state.blocked_seq, excluded.blocked_seq),
+         last_counted_seq = excluded.last_counted_seq,
+         initiator_name = COALESCE(workflow_guard_state.initiator_name, excluded.initiator_name),
+         host_name = COALESCE(excluded.host_name, workflow_guard_state.host_name),
+         terminal = 0,
+         terminal_seq = NULL,
+         updated_at = excluded.updated_at`,
+      decision.workflow.workflow_id,
+      decision.workflow.kind,
+      decision.workflow.run_id,
+      decision.workflow.step_id,
+      trackedState,
+      nextCount,
+      shouldTrip ? 1 : row?.no_progress ?? 0,
+      blockedSeq,
+      row?.last_progress_seq ?? null,
+      msg.seq,
+      row?.initiator_name ?? identity.name,
+      hostName,
+      now,
+    );
+    if (shouldTrip) {
+      const mentions = [...new Set([row?.initiator_name ?? identity.name, hostName].filter((name): name is string => !!name))];
+      const note = `workflow guard tripped: workflow ${decision.workflow.workflow_id} made no progress after ${nextCount} counted messages`;
+      const guardFrame = this.insertSystemStatus(note, now, true, {
+        mentions,
+        workflow: decision.workflow,
+        broadcast: false,
+      });
+      this.pruneWorkflowGuardState();
+      return guardFrame;
+    }
+    this.pruneWorkflowGuardState();
+    return undefined;
+  }
+
+  private upsertWorkflowGuardProgress(
+    workflow: StatusWorkflow,
+    state: StatusState,
+    seq: number,
+    initiatorName: string,
+    hostName: string | null,
+    now: number,
+    terminal: boolean,
+  ) {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO workflow_guard_state (
+         workflow_id, kind, run_id, step_id, state, count_since_progress, no_progress,
+         blocked_seq, last_progress_seq, last_counted_seq, initiator_name, host_name,
+         terminal, terminal_seq, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?, NULL, ?, ?, ?, ?, ?)
+       ON CONFLICT(workflow_id) DO UPDATE SET
+         kind = excluded.kind,
+         run_id = excluded.run_id,
+         step_id = excluded.step_id,
+         state = excluded.state,
+         count_since_progress = 0,
+         no_progress = 0,
+         blocked_seq = NULL,
+         last_progress_seq = excluded.last_progress_seq,
+         initiator_name = COALESCE(workflow_guard_state.initiator_name, excluded.initiator_name),
+         host_name = COALESCE(excluded.host_name, workflow_guard_state.host_name),
+         terminal = excluded.terminal,
+         terminal_seq = excluded.terminal_seq,
+         updated_at = excluded.updated_at`,
+      workflow.workflow_id,
+      workflow.kind,
+      workflow.run_id,
+      workflow.step_id,
+      state,
+      seq,
+      initiatorName,
+      hostName,
+      terminal ? 1 : 0,
+      terminal ? seq : null,
+      now,
+    );
+  }
+
+  private pruneWorkflowGuardState() {
+    const total = Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM workflow_guard_state").one().n);
+    const excess = total - 200;
+    if (excess <= 0) return;
+    const victims = this.ctx.storage.sql
+      .exec(
+        `SELECT workflow_id FROM workflow_guard_state
+          WHERE no_progress = 0
+          ORDER BY updated_at, workflow_id
+          LIMIT ?`,
+        excess,
+      )
+      .toArray()
+      .map((r) => String(r.workflow_id));
+    for (const workflowId of victims) {
+      this.ctx.storage.sql.exec("DELETE FROM workflow_guard_state WHERE workflow_id = ? AND no_progress = 0", workflowId);
+    }
+  }
+
+  private clearWorkflowGuards() {
+    this.ctx.storage.sql.exec(
+      "UPDATE workflow_guard_state SET count_since_progress = 0, no_progress = 0, blocked_seq = NULL, updated_at = ?",
+      Date.now(),
+    );
+  }
+
+  private resetWorkflowGuard(workflowId: string) {
+    this.ctx.storage.sql.exec(
+      `UPDATE workflow_guard_state
+          SET count_since_progress = 0,
+              no_progress = 0,
+              blocked_seq = NULL,
+              updated_at = ?
+        WHERE workflow_id = ?`,
+      Date.now(),
+      workflowId,
+    );
   }
 
   private consumeRate(name: string, now: number): SendErrorOutcome | null {
@@ -2586,6 +2940,8 @@ export class ChannelDO extends Server<Env> {
     if (completionArtifact !== undefined) frame.completion_artifact = completionArtifact;
     const completionReview = parseStoredCompletionReview(r);
     if (completionReview !== undefined) frame.completion_review = completionReview;
+    const workflowRef = parseStoredStatusWorkflow(r.message_workflow_json);
+    if (workflowRef !== undefined) frame.workflow_ref = workflowRef;
     if (r.edited_at !== null && r.edited_at !== undefined) {
       frame.edited = true;
       frame.edited_at = Number(r.edited_at);
