@@ -40,55 +40,55 @@ const legacyCh: ChannelAcl = { slug: "old", visibility: "private", owner_account
 describe("canAccessChannel v2 matrix (spec §5.4/§5.5)", () => {
   it("public channel: every identity may enter (public 先于 scope)", () => {
     for (const id of [apAgent, apHuman, legacyAgent, legacyReadonly, scopedAgent, scopedReadonly, roNoScope, oidcOwner, oidcFan]) {
-      expect(canAccessChannel(id, publicCh)).toBe(true);
+      expect(canAccessChannel(id, publicCh, false)).toBe(true);
     }
   });
 
   it("account owner (self / own agent / OIDC owner) enters own private channels", () => {
     for (const id of [apAgent, apHuman, oidcOwner]) {
-      expect(canAccessChannel(id, privateOwned)).toBe(true);
-      expect(canAccessChannel(id, collabCh)).toBe(true); // 同账号名下另一私有频道也进
+      expect(canAccessChannel(id, privateOwned, false)).toBe(true);
+      expect(canAccessChannel(id, collabCh, false)).toBe(true); // 同账号名下另一私有频道也进
     }
   });
 
   it("account owner cannot enter another account's private, nor an owner_account=null legacy channel", () => {
     for (const id of [apAgent, apHuman, oidcOwner]) {
-      expect(canAccessChannel(id, otherOwned)).toBe(false);
-      expect(canAccessChannel(id, legacyCh)).toBe(false); // owner_account=null → 带 owner 的 token / OIDC 进不去（§6）
+      expect(canAccessChannel(id, otherOwned, false)).toBe(false);
+      expect(canAccessChannel(id, legacyCh, false)).toBe(false); // owner_account=null → 带 owner 的 token / OIDC 进不去（§6）
     }
   });
 
   it("channel-scoped token: only its scope channel, others (even same owner) forbidden", () => {
-    expect(canAccessChannel(scopedAgent, collabCh)).toBe(true); // scope 命中
-    expect(canAccessChannel(scopedAgent, privateOwned)).toBe(false); // 同 owner 也拒（scope 硬上限）
-    expect(canAccessChannel(scopedAgent, otherOwned)).toBe(false);
-    expect(canAccessChannel(scopedAgent, publicCh)).toBe(true); // 公开频道可发
+    expect(canAccessChannel(scopedAgent, collabCh, false)).toBe(true); // scope 命中
+    expect(canAccessChannel(scopedAgent, privateOwned, false)).toBe(false); // 同 owner 也拒（scope 硬上限）
+    expect(canAccessChannel(scopedAgent, otherOwned, false)).toBe(false);
+    expect(canAccessChannel(scopedAgent, publicCh, false)).toBe(true); // 公开频道可发
   });
 
   it("channel-scoped readonly: read-only single channel; scope mismatch forbidden (连读都拒)", () => {
-    expect(canAccessChannel(scopedReadonly, collabCh)).toBe(true); // 只读单频道
-    expect(canAccessChannel(scopedReadonly, privateOwned)).toBe(false); // scope 不匹配连读都拒
-    expect(canAccessChannel(scopedReadonly, otherOwned)).toBe(false);
-    expect(canAccessChannel(scopedReadonly, publicCh)).toBe(true);
+    expect(canAccessChannel(scopedReadonly, collabCh, false)).toBe(true); // 只读单频道
+    expect(canAccessChannel(scopedReadonly, privateOwned, false)).toBe(false); // scope 不匹配连读都拒
+    expect(canAccessChannel(scopedReadonly, otherOwned, false)).toBe(false);
+    expect(canAccessChannel(scopedReadonly, publicCh, false)).toBe(true);
   });
 
   it("readonly without scope: private denied (不该再签发)", () => {
-    expect(canAccessChannel(roNoScope, privateOwned)).toBe(false); // 即便 account===owner_account
-    expect(canAccessChannel(roNoScope, collabCh)).toBe(false);
+    expect(canAccessChannel(roNoScope, privateOwned, false)).toBe(false); // 即便 account===owner_account
+    expect(canAccessChannel(roNoScope, collabCh, false)).toBe(false);
   });
 
   it("legacy ap_ token (owner=null) transitional passthrough on private (agent & readonly)", () => {
     for (const id of [legacyAgent, legacyReadonly]) {
-      expect(canAccessChannel(id, privateOwned)).toBe(true);
-      expect(canAccessChannel(id, otherOwned)).toBe(true);
-      expect(canAccessChannel(id, legacyCh)).toBe(true);
+      expect(canAccessChannel(id, privateOwned, false)).toBe(true);
+      expect(canAccessChannel(id, otherOwned, false)).toBe(true);
+      expect(canAccessChannel(id, legacyCh, false)).toBe(true);
     }
   });
 
   it("OIDC fan denied on any private channel", () => {
-    expect(canAccessChannel(oidcFan, privateOwned)).toBe(false);
-    expect(canAccessChannel(oidcFan, collabCh)).toBe(false);
-    expect(canAccessChannel(oidcFan, legacyCh)).toBe(false);
+    expect(canAccessChannel(oidcFan, privateOwned, false)).toBe(false);
+    expect(canAccessChannel(oidcFan, collabCh, false)).toBe(false);
+    expect(canAccessChannel(oidcFan, legacyCh, false)).toBe(false);
   });
 });
 

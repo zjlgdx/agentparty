@@ -31,13 +31,15 @@ function isLegacyAdminToken(identity: AclIdentity): boolean {
 //   ③ legacy ap_ token（owner=null）→ 过渡期放行
 //   ④ 无 scope 的 readonly（分享 token 本应带 scope，不该再签发无 scope 的）→ 私有一律拒（spec §5.5）
 //   ⑤ 账号规则 → principal.account === channel.owner_account（都非空才命中）
+//   ⑥ 成员规则 → principal.account ∈ channel_members(slug)
 // 写权限在此之上再叠加现有规则（readonly 不能发），不在本函数内判断。
-export function canAccessChannel(identity: AclIdentity, channel: ChannelAcl): boolean {
+export function canAccessChannel(identity: AclIdentity, channel: ChannelAcl, isMember: boolean): boolean {
   if (channel.visibility === "public") return true;
   if (identity.channel_scope != null) return channel.slug === identity.channel_scope;
   if (isLegacyAdminToken(identity)) return true;
   if (identity.role === "readonly") return false;
-  return identity.account != null && identity.account === channel.owner_account;
+  if (identity.account != null && identity.account === channel.owner_account) return true;
+  return isMember;
 }
 
 // 是否可对频道做管理操作（踢人/归档/webhook/reset-guard，spec §5 防滥用）：

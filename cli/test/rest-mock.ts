@@ -21,6 +21,10 @@ export function startRestMock(handler?: RestHandler): RestMock {
   // 有状态 webhook 存储：add 后 list 能查到
   const webhooks = new Map<string, { name: string; url: string; filter: string }[]>();
   const roles = new Map<string, { name: string; role: string; assigned_by: string; assigned_at: number }[]>();
+  const joinLinks = new Map<
+    string,
+    { code: string; channel_slug: string; created_by: string; created_at: number; expires_at: number | null; max_uses: number | null; uses: number; revoked_at: number | null }[]
+  >();
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -82,6 +86,10 @@ export function startRestMock(handler?: RestHandler): RestMock {
       if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/completion-gate$/.test(r.path)) {
         const b = body as { gate: "off" | "reviewer"; policy?: "sender" | "owner" };
         return Response.json({ gate: b.gate, policy: b.policy ?? "sender" });
+      }
+      if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/visibility$/.test(r.path)) {
+        const b = body as { visibility: "public" | "private" };
+        return Response.json({ visibility: b.visibility });
       }
       if (r.method === "POST" && /^\/api\/channels\/[^/]+\/messages\/[1-9]\d*\/review$/.test(r.path)) {
         const b = body as { action: "approve" | "reject"; reason?: string };
@@ -148,6 +156,47 @@ export function startRestMock(handler?: RestHandler): RestMock {
             slug,
             list.filter((r) => r.name !== name),
           );
+          return Response.json({ ok: true });
+        }
+      }
+      const joinMatch = r.path.match(/^\/api\/channels\/([^/]+)\/join-links(?:\/([^/]+))?$/);
+      if (joinMatch) {
+        const slug = decodeURIComponent(joinMatch[1]!);
+        const list = joinLinks.get(slug) ?? [];
+        if (r.method === "POST" && !joinMatch[2]) {
+          const b = body as { expires_in_sec?: number; max_uses?: number };
+          const code = `jl_${list.length + 1}`;
+          const link = {
+            code,
+            channel_slug: slug,
+            created_by: "owner",
+            created_at: 123,
+            expires_at: b.expires_in_sec === undefined ? null : 123 + b.expires_in_sec * 1000,
+            max_uses: b.max_uses ?? null,
+            uses: 0,
+            revoked_at: null,
+          };
+          joinLinks.set(slug, [...list, link]);
+          return Response.json({ ...link, url: `${u.origin}/join/${code}` }, { status: 201 });
+        }
+        if (r.method === "GET" && !joinMatch[2]) {
+          return Response.json({ links: list });
+        }
+        if (r.method === "DELETE" && joinMatch[2]) {
+          const code = decodeURIComponent(joinMatch[2]);
+          joinLinks.set(
+            slug,
+            list.map((link) => (link.code === code ? { ...link, revoked_at: 456 } : link)),
+          );
+          return Response.json({ ok: true });
+        }
+      }
+      const memberMatch = r.path.match(/^\/api\/channels\/([^/]+)\/members(?:\/(.+))?$/);
+      if (memberMatch) {
+        if (r.method === "GET" && !memberMatch[2]) {
+          return Response.json({ members: [] });
+        }
+        if (r.method === "DELETE" && memberMatch[2]) {
           return Response.json({ ok: true });
         }
       }

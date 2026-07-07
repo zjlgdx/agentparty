@@ -92,6 +92,18 @@ function positiveInt(input: unknown): number | null {
   return typeof input === "number" && Number.isInteger(input) && input > 0 ? input : null;
 }
 
+function randomJoinCode(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function validAccountParam(input: string): boolean {
+  return input.length > 0 && input.length <= 320 && !/[\x00-\x1f\x7f]/.test(input);
+}
+
 function captureRowToRecord(row: {
   channel_slug: string;
   seq: number;
@@ -244,6 +256,63 @@ async function loadChannel(db: D1Database, slug: string) {
       completion_gate: string;
       completion_review_policy: string;
     }>();
+}
+
+type LoadedChannel = NonNullable<Awaited<ReturnType<typeof loadChannel>>>;
+
+async function isChannelMember(db: D1Database, slug: string, account: string | null | undefined): Promise<boolean> {
+  if (account == null) return false;
+  const row = await db.prepare("SELECT account FROM channel_members WHERE channel_slug = ? AND account = ?")
+    .bind(slug, account)
+    .first<{ account: string }>();
+  return row !== null;
+}
+
+async function canAccessLoadedChannel(db: D1Database, identity: TokenIdentity, channel: LoadedChannel): Promise<boolean> {
+  return canAccessChannel(identity, channel, await isChannelMember(db, channel.slug, identity.account));
+}
+
+async function channelMessageStats(env: AppEnv, slug: string): Promise<{ message_count: number; earliest_ts: number | null }> {
+  const stub = await getServerByName(env.CHANNELS, slug);
+  const res = await stub.fetch(
+    new Request("https://do/internal/message-stats", { headers: { "x-partykit-room": slug } }),
+  );
+  if (!res.ok) return { message_count: 0, earliest_ts: null };
+  return (await res.json()) as { message_count: number; earliest_ts: number | null };
+}
+
+async function insertSystemStatus(env: AppEnv, slug: string, note: string, ts = Date.now()): Promise<boolean> {
+  const stub = await getServerByName(env.CHANNELS, slug);
+  const res = await stub.fetch(
+    new Request("https://do/internal/system-status", {
+      method: "POST",
+      body: JSON.stringify({ note, ts }),
+      headers: { "content-type": "application/json", "x-partykit-room": slug },
+    }),
+  );
+  return res.ok;
+}
+
+async function recentNonMemberSpeakers(db: D1Database, env: AppEnv, slug: string, ownerAccount: string | null): Promise<string[]> {
+  const stub = await getServerByName(env.CHANNELS, slug);
+  const res = await stub.fetch(
+    new Request("https://do/internal/messages?since=0&limit=1000", { headers: { "x-partykit-room": slug } }),
+  );
+  if (!res.ok) return [];
+  const body = (await res.json()) as { messages?: MsgFrame[] };
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const memberAccounts = new Set(
+    (await db.prepare("SELECT account FROM channel_members WHERE channel_slug = ?")
+      .bind(slug)
+      .all<{ account: string }>()).results.map((row) => row.account),
+  );
+  const accounts = new Set<string>();
+  for (const msg of body.messages ?? []) {
+    const account = msg.sender.owner;
+    if (msg.ts < cutoff || account === undefined || account === ownerAccount || memberAccounts.has(account)) continue;
+    accounts.add(account);
+  }
+  return [...accounts].sort();
 }
 
 // do 侧按 meta 缓存 mode/kind/host（loop guard 分档、temp 归档、webhook permalink 都要用）
@@ -509,7 +578,7 @@ app.post("/api/spawn", requireBearer, async (c) => {
   }
   const channel = await loadChannel(c.env.DB, requestedScope);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const ttlSec =
@@ -590,6 +659,7 @@ app.delete("/api/tokens/:name", requireAdmin, async (c) => {
 
 app.use("/api/channels", requireBearer);
 app.use("/api/channels/*", requireBearer);
+app.use("/api/join/*", requireBearer);
 
 // 频道列表页要「最近一条消息 + 参与者状态点」（spec §9 第 1 块），逐 do 聚合 summary
 interface ChannelSummary {
@@ -605,7 +675,15 @@ app.get("/api/channels", async (c) => {
   ).all<{ slug: string; visibility: string; created_by: string | null; owner_account: string | null }>();
   // 防私有频道泄漏给粉丝（spec §5.5）：无权访问的私有频道连名字都不出现，summary 也不拉。
   // 账号房主 / 自己的 agent / scope 命中的 token / legacy token 照常看到对应私有频道。
-  const visible = results.filter((row) => canAccessChannel(identity, row));
+  const memberSlugs =
+    identity.account == null
+      ? new Set<string>()
+      : new Set(
+          (await c.env.DB.prepare("SELECT channel_slug FROM channel_members WHERE account = ?")
+            .bind(identity.account)
+            .all<{ channel_slug: string }>()).results.map((row) => row.channel_slug),
+        );
+  const visible = results.filter((row) => canAccessChannel(identity, row, memberSlugs.has(row.slug)));
   const channels = await Promise.all(
     visible.map(async ({ created_by, owner_account, ...row }) => {
       let summary: ChannelSummary = { last: null, presence: [] };
@@ -689,12 +767,243 @@ app.post("/api/channels", async (c) => {
   return c.json({ slug, title, kind, mode, visibility }, 201);
 });
 
+app.get("/api/channels/:slug/members", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  const isMember = await isChannelMember(c.env.DB, slug, identity.account);
+  if (!isChannelModerator(identity, channel) && !isMember) {
+    return c.json(errorBody("forbidden", "only channel moderators or members can list members"), 403);
+  }
+  const { results } = await c.env.DB.prepare(
+    "SELECT account, added_by, added_at FROM channel_members WHERE channel_slug = ? ORDER BY account",
+  )
+    .bind(slug)
+    .all<{ account: string; added_by: string; added_at: number }>();
+  return c.json({ members: results });
+});
+
+app.put("/api/channels/:slug/members/:account", async (c) => {
+  const slug = c.req.param("slug");
+  const account = decodeURIComponent(c.req.param("account"));
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (!isChannelModerator(identity, channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can add members"), 403);
+  }
+  if (!validAccountParam(account)) {
+    return c.json(errorBody("bad_request", "valid account required"), 400);
+  }
+  const addedBy = identity.account ?? identity.name;
+  const addedAt = Date.now();
+  await c.env.DB.prepare(
+    `INSERT INTO channel_members (channel_slug, account, added_by, added_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(channel_slug, account) DO UPDATE SET
+       added_by = excluded.added_by,
+       added_at = excluded.added_at`,
+  )
+    .bind(slug, account, addedBy, addedAt)
+    .run();
+  return c.json({ account, added_by: addedBy, added_at: addedAt });
+});
+
+app.delete("/api/channels/:slug/members/:account", async (c) => {
+  const slug = c.req.param("slug");
+  const identity = c.get("identity");
+  const rawAccount = decodeURIComponent(c.req.param("account"));
+  const account = rawAccount === "me" ? identity.account : rawAccount;
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (account == null || !validAccountParam(account)) {
+    return c.json(errorBody("bad_request", "valid account required"), 400);
+  }
+  if (account === channel.owner_account) {
+    return c.json(errorBody("bad_request", "channel owner cannot be removed"), 400);
+  }
+  if (!isChannelModerator(identity, channel) && identity.account !== account) {
+    return c.json(errorBody("forbidden", "only moderators can remove other members"), 403);
+  }
+  await c.env.DB.prepare("DELETE FROM channel_members WHERE channel_slug = ? AND account = ?")
+    .bind(slug, account)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.post("/api/channels/:slug/join-links", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (!isChannelModerator(identity, channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can manage join links"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as { expires_in_sec?: unknown; max_uses?: unknown } | null;
+  const expiresInSec = body?.expires_in_sec === undefined || body?.expires_in_sec === null ? null : positiveInt(body.expires_in_sec);
+  const maxUses = body?.max_uses === undefined || body?.max_uses === null ? null : positiveInt(body.max_uses);
+  if (expiresInSec === null && body?.expires_in_sec !== undefined && body.expires_in_sec !== null) {
+    return c.json(errorBody("bad_request", "expires_in_sec must be a positive integer"), 400);
+  }
+  if (maxUses === null && body?.max_uses !== undefined && body.max_uses !== null) {
+    return c.json(errorBody("bad_request", "max_uses must be a positive integer"), 400);
+  }
+  const now = Date.now();
+  const expiresAt = expiresInSec === null ? null : now + expiresInSec * 1000;
+  let code = randomJoinCode();
+  for (let i = 0; i < 3; i++) {
+    try {
+      const createdBy = identity.account ?? identity.name;
+      await c.env.DB.prepare(
+        `INSERT INTO channel_join_links (code, channel_slug, created_by, created_at, expires_at, max_uses, uses, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, NULL)`,
+      )
+        .bind(code, slug, createdBy, now, expiresAt, maxUses)
+        .run();
+      const url = new URL(c.req.url);
+      return c.json(
+        { code, url: `${url.origin}/join/${code}`, channel_slug: slug, created_by: createdBy, created_at: now, expires_at: expiresAt, max_uses: maxUses, uses: 0, revoked_at: null },
+        201,
+      );
+    } catch {
+      code = randomJoinCode();
+    }
+  }
+  return c.json(errorBody("conflict", "could not allocate join link code"), 409);
+});
+
+app.get("/api/channels/:slug/join-links", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!isChannelModerator(c.get("identity"), channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can manage join links"), 403);
+  }
+  const { results } = await c.env.DB.prepare(
+    `SELECT code, channel_slug, created_by, created_at, expires_at, max_uses, uses, revoked_at
+       FROM channel_join_links
+      WHERE channel_slug = ?
+      ORDER BY created_at DESC`,
+  )
+    .bind(slug)
+    .all();
+  return c.json({ links: results });
+});
+
+app.delete("/api/channels/:slug/join-links/:code", async (c) => {
+  const slug = c.req.param("slug");
+  const code = c.req.param("code");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!isChannelModerator(c.get("identity"), channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can manage join links"), 403);
+  }
+  const result = await c.env.DB.prepare(
+    "UPDATE channel_join_links SET revoked_at = COALESCE(revoked_at, ?) WHERE code = ? AND channel_slug = ?",
+  )
+    .bind(Date.now(), code, slug)
+    .run();
+  if (result.meta.changes === 0) return c.json(errorBody("not_found", "join link not found"), 404);
+  return c.json({ ok: true });
+});
+
+app.post("/api/join/:code", async (c) => {
+  const identity = c.get("identity");
+  if (!identity.hash.startsWith("oidc:")) {
+    return c.json(
+      errorBody("forbidden", "join links are for OIDC human identities; agents should use the party-invite onboarding package"),
+      403,
+    );
+  }
+  if (identity.account == null) {
+    return c.json(errorBody("forbidden", "join links require an account identity"), 403);
+  }
+  const code = c.req.param("code");
+  const now = Date.now();
+  const link = await c.env.DB.prepare(
+    "SELECT code, channel_slug, expires_at, max_uses, uses, revoked_at FROM channel_join_links WHERE code = ?",
+  )
+    .bind(code)
+    .first<{ code: string; channel_slug: string; expires_at: number | null; max_uses: number | null; uses: number; revoked_at: number | null }>();
+  if (!link) return c.json(errorBody("not_found", "join link not found"), 404);
+  if (link.revoked_at !== null) return c.json(errorBody("not_found", "join link has been revoked"), 410);
+  if (link.expires_at !== null && link.expires_at <= now) return c.json(errorBody("not_found", "join link has expired"), 410);
+  if (link.max_uses !== null && link.uses >= link.max_uses) {
+    return c.json(errorBody("not_found", "join link has reached its max uses"), 410);
+  }
+  const addedBy = `join-link:${code.slice(0, 8)}`;
+  const inserted = await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO channel_members (channel_slug, account, added_by, added_at) VALUES (?, ?, ?, ?)",
+  )
+    .bind(link.channel_slug, identity.account, addedBy, now)
+    .run();
+  if (inserted.meta.changes === 0) {
+    return c.json({ channel_slug: link.channel_slug, joined: false });
+  }
+  const counted = await c.env.DB.prepare(
+    `UPDATE channel_join_links
+        SET uses = uses + 1
+      WHERE code = ?
+        AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND (max_uses IS NULL OR uses < max_uses)`,
+  )
+    .bind(code, now)
+    .run();
+  if (counted.meta.changes === 0) {
+    await c.env.DB.prepare("DELETE FROM channel_members WHERE channel_slug = ? AND account = ? AND added_by = ?")
+      .bind(link.channel_slug, identity.account, addedBy)
+      .run();
+    return c.json(errorBody("not_found", "join link has reached its max uses"), 410);
+  }
+  return c.json({ channel_slug: link.channel_slug, joined: true });
+});
+
+app.put("/api/channels/:slug/visibility", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (!isChannelModerator(identity, channel)) {
+    return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can change visibility"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as { visibility?: unknown; confirm?: unknown } | null;
+  const visibility = typeof body?.visibility === "string" ? body.visibility : "";
+  if (!VISIBILITIES.includes(visibility)) {
+    return c.json(errorBody("bad_request", "visibility must be public or private"), 400);
+  }
+  if (visibility === channel.visibility) {
+    return c.json({ visibility, changed: false });
+  }
+  if (channel.visibility === "private" && visibility === "public" && body?.confirm !== true) {
+    const stats = await channelMessageStats(c.env, slug);
+    return c.json(
+      { needs_confirm: true, message_count: stats.message_count, earliest_ts: stats.earliest_ts },
+      409,
+    );
+  }
+  const now = Date.now();
+  await c.env.DB.prepare("UPDATE channels SET visibility = ? WHERE slug = ?")
+    .bind(visibility, slug)
+    .run();
+  const ok = await insertSystemStatus(c.env, slug, `visibility changed to ${visibility} by ${identity.name}`, now);
+  if (!ok) return c.json(errorBody("unavailable", "visibility changed but audit status failed"), 503);
+  const recentSpeakers =
+    visibility === "private" ? await recentNonMemberSpeakers(c.env.DB, c.env, slug, channel.owner_account) : [];
+  return c.json({
+    visibility,
+    changed: true,
+    ...(visibility === "private" ? { recent_non_member_speakers: recentSpeakers } : {}),
+  });
+});
+
 app.get("/api/channels/:slug/messages", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   // 防粉丝用 REST 绕过 WS 读私有频道历史（spec §3.2）
-  if (!canAccessChannel(c.get("identity"), channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const stub = await getServerByName(c.env.CHANNELS, slug);
@@ -710,7 +1019,7 @@ app.get("/api/channels/:slug/search", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
-  if (!canAccessChannel(c.get("identity"), channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const q = new URL(c.req.url).searchParams.get("q");
@@ -730,7 +1039,7 @@ app.get("/api/channels/:slug/wake-deliveries", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
-  if (!canAccessChannel(c.get("identity"), channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const stub = await getServerByName(c.env.CHANNELS, slug);
@@ -746,7 +1055,7 @@ app.get("/api/channels/:slug/captures", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
-  if (!canAccessChannel(c.get("identity"), channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const url = new URL(c.req.url);
@@ -777,7 +1086,7 @@ app.post("/api/channels/:slug/captures", async (c) => {
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   if (identity.role === "readonly") {
@@ -851,7 +1160,7 @@ app.get("/api/channels/:slug/roles", async (c) => {
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const { results } = await c.env.DB.prepare(
@@ -973,7 +1282,7 @@ app.post("/api/channels/:slug/messages/:seq/review", async (c) => {
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   if (channel.archived_at !== null) {
@@ -1008,7 +1317,7 @@ app.post("/api/channels/:slug/messages/:seq/:action", async (c) => {
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   if (channel.archived_at !== null) {
@@ -1047,7 +1356,7 @@ app.get("/api/channels/:slug/messages/:seq/audit", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
-  if (!canAccessChannel(c.get("identity"), channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   const seq = positiveInt(Number(c.req.param("seq")));
@@ -1066,7 +1375,7 @@ app.post("/api/channels/:slug/messages", async (c) => {
   if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
   const identity = c.get("identity");
   // 私有频道仅 ap_ token 或房主可发（spec §3.2）；写权限的 readonly 限制在 do 侧
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
   if (channel.archived_at !== null) {
@@ -1268,7 +1577,7 @@ app.get("/api/channels/:slug/ws", async (c) => {
   // 用 accept-then-close(1008,"forbidden") 而非 HTTP 403：浏览器 WebSocket 只对 close code/reason
   // 敏感，握手阶段的 403 在客户端仅表现为 1006（无 reason），会被误判为普通断线而无限重连；
   // 1008+"forbidden" 与 archived 同套路，ws.ts 据此识别终局、停重连、提示（不进 do，零 DO 负载）。
-  if (!canAccessChannel(identity, channel)) {
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
     const requested = c.req
       .header("sec-websocket-protocol")
       ?.split(",")
