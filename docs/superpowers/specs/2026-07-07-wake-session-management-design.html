@@ -66,10 +66,15 @@ li{margin:4px 0}
 <h3>L0 基线 —— 隔离域（一行代价，立即进 join pack）</h3>
 <pre><code># Codex：给 runner 专用 CODEX_HOME —— --last 的可见范围只剩这个 runner 自己的会话
 export CODEX_HOME="$WORK/.codex"     # $WORK = 该 runner 的专用工作目录
+# ⚠ CODEX_HOME 里不止有会话，还有 auth.json（登录凭据）——新目录必须带上登录态，否则 codex 直接起不来：
+mkdir -p "$CODEX_HOME"
+[ -f "$CODEX_HOME/auth.json" ] || cp ~/.codex/auth.json "$CODEX_HOME/auth.json"   # 只拷一次，之后隔离 home 自管刷新
 
 # Claude：本就按 cwd 找会话，专用工作目录即隔离（join pack 已有此要求）
 cd "$WORK"</code></pre>
-<p>解决 F1/F2；<b>不解决 F3</b>（自己 fork 自己仍无感知）。</p>
+<p>解决 F1/F2；<b>不解决 F3</b>（自己 fork 自己仍无感知）。
+<b>教训（v1.1 修订）</b>：首个生产落地（xdreamstar runner，2026-07-07）即踩中 auth 缺失——切换隔离 home 当天 codex exec exit 1，
+根因就是凭据没跟着走。隔离"会话域"时凡是 home 目录承载的一切旁挂状态（auth/配置）都要盘点迁移。</p>
 
 <h3>L1 标准 —— 固定 session id + 状态文件（runner 应实现）</h3>
 <p>runner 在 <code>$WORK/wake-session.json</code> 维护会话状态：</p>
