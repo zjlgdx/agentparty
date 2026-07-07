@@ -245,3 +245,33 @@ export async function resetGuard(token: string, slug: string): Promise<void> {
   if (res.status === 403) throw new ForbiddenError("forbidden");
   if (!res.ok) throw new Error(`POST /api/channels/${slug}/reset-guard failed (${res.status})`);
 }
+
+// 可见性切换（issue #38）。private→public 服务端要 confirm=true，未带时返回 409 + needs_confirm，
+// 这里以 { needsConfirm, messageCount } resolve 让 UI 弹二段确认，而不是当错误抛。
+export interface VisibilityResult {
+  visibility?: "public" | "private";
+  changed?: boolean;
+  needsConfirm?: boolean;
+  messageCount?: number;
+}
+export async function setChannelVisibility(
+  token: string,
+  slug: string,
+  visibility: "public" | "private",
+  confirm = false,
+): Promise<VisibilityResult> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/visibility`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(confirm ? { visibility, confirm: true } : { visibility }),
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("only the channel owner can change visibility");
+  if (res.status === 409) {
+    const b = (await res.json().catch(() => ({}))) as { message_count?: number };
+    return { needsConfirm: true, messageCount: b.message_count };
+  }
+  if (!res.ok) throw new Error(`PUT /api/channels/${slug}/visibility failed (${res.status})`);
+  const b = (await res.json()) as { visibility?: "public" | "private"; changed?: boolean };
+  return { visibility: b.visibility, changed: b.changed };
+}

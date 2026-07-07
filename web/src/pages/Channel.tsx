@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import type { CSSProperties } from "react";
 import { buildHostBoard, type HostBoard, type MsgFrame, type SearchHit } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
+import { VisibilityToggle } from "../components/VisibilityToggle";
 import { Composer } from "../components/Composer";
 import { MessageCard } from "../components/MessageCard";
 import { PresenceBar } from "../components/PresenceBar";
@@ -487,6 +488,8 @@ export function ChannelPage({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [guardResetting, setGuardResetting] = useState(false);
   const [guardResetError, setGuardResetError] = useState<string | null>(null);
+  // 可见性可在会话内切换（issue #38 web），本地 state 让顶栏徽章即时反映，无需重载
+  const [localPublic, setLocalPublic] = useState(isPublic);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [seenSeq, setSeenSeq] = useState<number | null>(null);
   const [teamNow, setTeamNow] = useState(() => Date.now());
@@ -854,11 +857,18 @@ export function ChannelPage({
         participants={state.participants}
         status={state.status}
         party={mode === "party" || state.mode === "party"}
-        isPublic={isPublic}
+        isPublic={localPublic}
       />
       {canMintAgent && !state.archived && (
         <div className="chan-toolbar">
           <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} inviterName={inviterName} />
+          <VisibilityToggle
+            slug={slug}
+            token={token}
+            isPublic={localPublic}
+            onChanged={setLocalPublic}
+            onAuthFailed={onAuthFailed}
+          />
         </div>
       )}
       {/* chat-first：这些协调/元信息面板默认折叠，避免把核心对话流挤出首屏。展开查看 digest/过滤/host board 等。 */}
