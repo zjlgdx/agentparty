@@ -23,7 +23,9 @@ Options:
 const WAKEABLE: readonly WakeKind[] = ["serve", "watch", "webhook"];
 const STALE_MS = 60_000; // 与 DO presence 扫描一致
 const DEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14 天没露面视为幽灵，不再列
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 系统生成的人类会话名（网页登录默认名 = UUID；OIDC 设备验证 = login-verify-*），非 @ 目标
+const SYSTEM_HUMAN_SESSION_RE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|login-verify-.+)$/i;
 
 type Tier = "online" | "wakeable" | "recent";
 interface Row {
@@ -37,7 +39,7 @@ interface Row {
 // kind 已知取 kind；旧 presence 行没回填时 UUID 名判 human（网页登录会话），其余判 agent。
 function kindOf(e: PresenceEntry): SenderKind {
   if (e.kind === "agent" || e.kind === "human") return e.kind;
-  return UUID_RE.test(e.name) ? "human" : "agent";
+  return SYSTEM_HUMAN_SESSION_RE.test(e.name) ? "human" : "agent";
 }
 
 // 返回该 presence 的候选行，或 null（离线人类 / 幽灵，不该列）。

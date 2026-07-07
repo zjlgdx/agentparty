@@ -57,6 +57,14 @@ describe("mentionCandidates", () => {
     expect(mentionCandidates([], pres, null, NOW)).toEqual([]);
   });
 
+  test("login-verify-* system session excluded when offline", () => {
+    const pres = {
+      "login-verify-h2": presence({ name: "login-verify-h2" }), // OIDC 设备验证流，human
+      "real-agent": presence({ name: "real-agent", kind: "agent" }),
+    };
+    expect(mentionCandidates([], pres, null, NOW).map((c) => c.name)).toEqual(["real-agent"]);
+  });
+
   test("recent agent (days old) is kept; only long-dead (>14d) ghost dropped", () => {
     const DAY = 24 * 60 * 60 * 1000;
     const pres = {

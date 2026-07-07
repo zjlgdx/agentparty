@@ -16,9 +16,10 @@ const STALE_MS = 60_000; // 与 PRESENCE_TIMEOUT_MS 一致：超过即算 recent
 // 幽灵清理：只为防止频道长期累积几个月前的一次性 agent。设得宽松——几天前聊过的 agent
 // 仍是合理的 @/唤醒目标，不该被剔。真正的噪声（围观的人类会话）已由 kind/UUID 规则处理。
 const DEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14 天没露面才视为幽灵
-// 纯 UUID 名 = 网页登录会话（human）的默认 token 名，永远不是有意义的 @ 目标。
-// 用于过渡期：旧 presence 行还没回填 kind 时，靠名字形状也能把这些围观会话剔掉。
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 系统生成的人类会话名，永远不是有意义的 @ 目标：网页登录 token 默认名 = 纯 UUID；
+// OIDC 设备验证流 = login-verify-*。过渡期旧 presence 行没回填 kind 时靠名字把它们判为 human。
+const SYSTEM_HUMAN_SESSION_RE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|login-verify-.+)$/i;
 
 // 档位：① 在线（当前有 WS 连接） ② 可唤醒（presence 声明了 serve/watch/webhook 且不 stale）
 // ③ 最近活跃（其余 presence）。同名取更高档。
@@ -56,7 +57,7 @@ export function mentionCandidates(
   }
   // kind 已知取 kind；未知（旧 presence 行没回填）时：UUID 名当 human，其余当 agent。
   const kindFor = (name: string): "agent" | "human" =>
-    kindOf.get(name) ?? (UUID_RE.test(name) ? "human" : "agent");
+    kindOf.get(name) ?? (SYSTEM_HUMAN_SESSION_RE.test(name) ? "human" : "agent");
 
   const names = new Set<string>([...online, ...Object.keys(presence)]);
   const rank: Record<MentionTier, number> = { online: 0, wakeable: 1, recent: 2 };
