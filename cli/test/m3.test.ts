@@ -1376,6 +1376,20 @@ describe("party status/history channel flag", () => {
     });
   });
 
+  test("complete reports pending_review when server gates completion", async () => {
+    mock = startRestMock((req) => {
+      if (req.method === "POST" && req.path === "/api/channels/dev/messages") {
+        return Response.json({ seq: 9, completion_review: { state: "pending_review", policy: "sender" } });
+      }
+      return undefined;
+    });
+    writeCfg(mock.url);
+    const r = await runCli(["complete", "final", "--channel", "dev", "--kickoff-seq", "3"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("completion seq=9 pending_review");
+    expect(r.stdout).toContain("party review approve 9 --channel dev");
+  });
+
   test("complete validates kickoff and replies locally", async () => {
     mock = startRestMock();
     writeCfg(mock.url);
@@ -1555,6 +1569,45 @@ describe("party status/history channel flag", () => {
     const missingBody = await runCli(["supersede", "7"]);
     expect(missingBody.code).toBe(1);
     expect(missingBody.stderr).toContain("body is required");
+  });
+
+  test("review approve/reject call gated completion endpoint", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    writeWorkspaceState("dev");
+
+    const approve = await runCli(["review", "approve", "7", "--json"]);
+    expect(approve.code).toBe(0);
+    expect(JSON.parse(approve.stdout.trim())).toMatchObject({
+      schema: "agentparty.v1",
+      seq: 7,
+      completion_review: { state: "approved" },
+    });
+    expect(reqsOf(mock, "POST", "/api/channels/dev/messages/7/review")[0]!.body).toEqual({ action: "approve" });
+
+    const reject = await runCli(["review", "reject", "7", "-m", "needs tests", "--channel", "ops"]);
+    expect(reject.code).toBe(0);
+    expect(reject.stdout).toContain("review rejected #7");
+    expect(reqsOf(mock, "POST", "/api/channels/ops/messages/7/review")[0]!.body).toEqual({
+      action: "reject",
+      reason: "needs tests",
+    });
+  });
+
+  test("review validates action seq reason and channel locally", async () => {
+    mock = startRestMock();
+    writeCfg(mock.url);
+    writeWorkspaceState("dev");
+    for (const args of [
+      ["review", "maybe", "7"],
+      ["review", "approve", "wat"],
+      ["review", "reject", "7"],
+      ["review", "approve", "7", "--channel", "Bad_Slug"],
+    ]) {
+      const r = await runCli(args);
+      expect(r.code).toBe(1);
+    }
+    expect(mock.requests.length).toBe(0);
   });
 
   test("capture creates durable tags, lists them, and prints issue bodies", async () => {

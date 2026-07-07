@@ -19,6 +19,7 @@ commands:
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
   complete  <text|-> --kickoff-seq seq [--channel C] [--replies n] [--timeout] [--issue n]... [--pr n]...
+  review    approve|reject <seq> [-m reason] [--channel C] [--json]
   edit      <seq> <text|-> [--channel C] [--json]
   retract   <seq> [--channel C] [--json]
   supersede <seq> <text|-> [--channel C] [--json]
@@ -68,6 +69,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/send")).run(rest);
     case "complete":
       return (await import("./commands/complete")).run(rest);
+    case "review":
+      return (await import("./commands/review")).run(rest);
     case "edit":
     case "retract":
     case "supersede":

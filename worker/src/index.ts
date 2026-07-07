@@ -968,6 +968,41 @@ app.put("/api/channels/:slug/completion-gate", async (c) => {
   return c.json({ gate, policy });
 });
 
+app.post("/api/channels/:slug/messages/:seq/review", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  const identity = c.get("identity");
+  if (!canAccessChannel(identity, channel)) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  if (channel.archived_at !== null) {
+    return c.json(errorBody("archived", "channel is archived"), 410);
+  }
+  const seq = positiveInt(Number(c.req.param("seq")));
+  if (seq === null) return c.json(errorBody("bad_request", "seq must be a positive integer"), 400);
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  const assignedRole = await loadAssignedRole(c.env.DB, slug, identity.name);
+  return stub.fetch(
+    new Request(`https://do/internal/messages/${seq}/review`, {
+      method: "POST",
+      body: await c.req.text(),
+      headers: {
+        "content-type": "application/json",
+        "x-partykit-room": slug,
+        "x-ap-name": identity.name,
+        "x-ap-kind": identity.kind,
+        "x-ap-role": identity.role,
+        ...(identity.owner ? { "x-ap-owner": identity.owner } : {}),
+        "x-ap-token-hash": identity.hash,
+        ...lineageHeaders(identity),
+        ...assignedRoleHeaders(assignedRole),
+        ...channelHeaders(channel, c.req.url),
+      },
+    }),
+  );
+});
+
 app.post("/api/channels/:slug/messages/:seq/:action", async (c) => {
   const slug = c.req.param("slug");
   const channel = await loadChannel(c.env.DB, slug);

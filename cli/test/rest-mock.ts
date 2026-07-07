@@ -83,6 +83,51 @@ export function startRestMock(handler?: RestHandler): RestMock {
         const b = body as { gate: "off" | "reviewer"; policy?: "sender" | "owner" };
         return Response.json({ gate: b.gate, policy: b.policy ?? "sender" });
       }
+      if (r.method === "POST" && /^\/api\/channels\/[^/]+\/messages\/[1-9]\d*\/review$/.test(r.path)) {
+        const b = body as { action: "approve" | "reject"; reason?: string };
+        const seq = Number(r.path.match(/\/messages\/([1-9]\d*)\/review$/)?.[1]);
+        return Response.json({
+          message: {
+            type: "msg",
+            seq,
+            sender: { name: "worker", kind: "agent" },
+            kind: "message",
+            body: "final",
+            mentions: [],
+            reply_to: 1,
+            state: null,
+            note: null,
+            status: null,
+            completion_artifact: {
+              kind: "final_synthesis",
+              kickoff_seq: 1,
+              replies_count: 0,
+              timeout: false,
+              related_issues: [],
+              related_prs: [],
+            },
+            completion_review: {
+              state: b.action === "approve" ? "approved" : "rejected",
+              policy: "sender",
+              reason: b.reason,
+            },
+            ts: 123,
+          },
+          reply: {
+            type: "msg",
+            seq: seq + 1,
+            sender: { name: "reviewer", kind: "agent" },
+            kind: "message",
+            body: b.action === "approve" ? `review approved #${seq}` : `@worker review rejected #${seq}: ${b.reason}`,
+            mentions: b.action === "approve" ? [] : ["worker"],
+            reply_to: seq,
+            state: null,
+            note: null,
+            status: null,
+            ts: 124,
+          },
+        });
+      }
       const roleMatch = r.path.match(/^\/api\/channels\/([^/]+)\/roles(?:\/([^/]+))?$/);
       if (roleMatch) {
         const slug = decodeURIComponent(roleMatch[1]!);

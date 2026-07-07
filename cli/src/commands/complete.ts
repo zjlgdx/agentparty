@@ -9,7 +9,8 @@ const COMPLETE_FLAGS = ["channel", "kickoff-seq", "replies", "timeout", "issue",
 const HELP = `usage: party complete <text|-> --kickoff-seq seq [--channel C] [--replies n] [--timeout] [--issue n]... [--pr n]... [--mention name]...
 
 Publish a final synthesis completion artifact. The message replies to kickoff seq.
-After it succeeds, mark done with: party status <channel> done --summary-seq <seq>
+If review gate is enabled, approve/reject it with: party review approve|reject <seq>
+Otherwise mark done with: party status <channel> done --summary-seq <seq>
 
 Options:
   --channel C       send to channel C instead of the bound channel
@@ -102,7 +103,7 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
   try {
-    const { seq } = await postMessage(auth.server, auth.token, channel, {
+    const { seq, completion_review } = await postMessage(auth.server, auth.token, channel, {
       kind: "message",
       body,
       mentions,
@@ -117,7 +118,12 @@ export async function run(argv: string[]): Promise<number> {
       },
     });
     saveCursor(channel, seq);
-    console.log(`completion seq=${seq}`);
+    if (completion_review?.state === "pending_review") {
+      console.log(`completion seq=${seq} pending_review`);
+      console.log(`next: party review approve ${seq} --channel ${channel}  # or: party review reject ${seq} -m "reason" --channel ${channel}`);
+    } else {
+      console.log(`completion seq=${seq}`);
+    }
     return 0;
   } catch (e) {
     return handleRestError(e);

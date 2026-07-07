@@ -114,6 +114,7 @@ const STATUS_DECISION_JSON_LIMIT = 4096;
 const STATUS_WORKFLOW_JSON_LIMIT = 4096;
 const MAX_COMPLETION_RELATED = 20;
 const COMPLETION_ARTIFACT_JSON_LIMIT = 4096;
+const REVIEW_REASON_LIMIT = 4000;
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).byteLength;
@@ -1396,6 +1397,36 @@ export class ChannelDO extends Server<Env> {
     if (notifyWebhooks) this.ctx.waitUntil(this.dispatchWebhooks(frame));
   }
 
+  private insertReviewerReply(identity: Identity, body: string, mentions: string[], replyTo: number, now: number): MsgFrame {
+    const seq = this.lastSeq() + 1;
+    const effectiveRole = identity.collabRole;
+    const roleSource: CollaborationRoleSource | undefined = identity.collabRole === undefined ? undefined : "assigned";
+    this.ctx.storage.sql.exec(
+      `INSERT INTO messages (
+         seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
+         state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
+         status_decision_json, status_workflow_json,
+         sender_role, sender_role_source, completion_artifact_json, ts
+       )
+       VALUES (?, ?, ?, ?, ?, 'message', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+      seq,
+      identity.name,
+      identity.kind,
+      identity.owner ?? null,
+      identity.lineage === undefined ? null : JSON.stringify(identity.lineage),
+      body,
+      JSON.stringify(mentions),
+      replyTo,
+      effectiveRole ?? null,
+      roleSource ?? null,
+      now,
+    );
+    const row = this.ctx.storage.sql.exec("SELECT * FROM messages WHERE seq = ?", seq).one();
+    const frame = this.rowToFrame(row);
+    this.linkWakeResume(identity.name, frame);
+    return frame;
+  }
+
   // 归档收口：写 meta + 广播 error:archived + 踢连接（手动归档与 temp 自动归档共用）
   private archiveAndKick() {
     this.setMeta("archived", "1");
@@ -1642,6 +1673,104 @@ export class ChannelDO extends Server<Env> {
       await this.afterSend(newFrame);
       return Response.json({ message: newFrame, superseded: oldFrame });
     }
+    const reviewMatch = url.pathname.match(/^\/internal\/messages\/([1-9]\d*)\/review$/);
+    if (reviewMatch && request.method === "POST") {
+      this.cacheChannelMeta(request.headers, request.headers.get("x-ap-host"));
+      const seq = Number(reviewMatch[1]);
+      const identity: Identity = {
+        name: request.headers.get("x-ap-name") ?? "",
+        kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
+        role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
+        owner: request.headers.get("x-ap-owner") ?? undefined,
+        lineage: lineageFromHeaders(request.headers),
+        tokenHash: request.headers.get("x-ap-token-hash") ?? "",
+        collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
+        collabRoleSource: parseRoleSource(request.headers.get("x-ap-role-source") ?? undefined) ?? undefined,
+      };
+      if (this.isArchived()) {
+        return Response.json({ error: { code: "archived", message: "channel is archived" } }, { status: 410 });
+      }
+      if (identity.role === "readonly") {
+        return Response.json({ error: { code: "unauthorized", message: "readonly token cannot review completions" } }, { status: 403 });
+      }
+      if (!(await this.isTokenActive(identity.tokenHash))) {
+        return Response.json({ error: { code: "unauthorized", message: "invalid or revoked token" } }, { status: 401 });
+      }
+      const body = (await request.json().catch(() => null)) as { action?: unknown; reason?: unknown } | null;
+      const action = body?.action;
+      if (action !== "approve" && action !== "reject") {
+        return Response.json({ error: { code: "bad_request", message: "action must be approve or reject" } }, { status: 400 });
+      }
+      const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+      if (action === "reject" && reason === "") {
+        return Response.json({ error: { code: "bad_request", message: "reject reason is required" } }, { status: 400 });
+      }
+      if (byteLength(reason) > REVIEW_REASON_LIMIT) {
+        return Response.json({ error: { code: "too_large", message: `reason exceeds ${REVIEW_REASON_LIMIT} bytes` } }, { status: 413 });
+      }
+      const row = this.ctx.storage.sql.exec("SELECT * FROM messages WHERE seq = ?", seq).one();
+      if (!row) {
+        return Response.json({ error: { code: "not_found", message: `message seq ${seq} not found` } }, { status: 404 });
+      }
+      if (String(row.kind) !== "message" || row.completion_artifact_json === null || row.completion_artifact_json === undefined) {
+        return Response.json({ error: { code: "bad_request", message: "target is not a completion message" } }, { status: 400 });
+      }
+      if (row.retracted_at !== null && row.retracted_at !== undefined) {
+        return Response.json({ error: { code: "bad_request", message: "retracted completion cannot be reviewed" } }, { status: 400 });
+      }
+      const currentState = row.completion_review_state === null || row.completion_review_state === undefined ? null : String(row.completion_review_state);
+      if (currentState !== "pending_review") {
+        return Response.json({ error: { code: "review_already_final", message: "completion is not pending review" } }, { status: 409 });
+      }
+      const policy =
+        row.completion_review_policy === null || row.completion_review_policy === undefined
+          ? "sender"
+          : (String(row.completion_review_policy) as CompletionReviewPolicy);
+      const senderName = String(row.sender_name);
+      const senderOwner =
+        row.sender_owner === null || row.sender_owner === undefined ? undefined : String(row.sender_owner);
+      if (identity.name === senderName) {
+        return Response.json({ error: { code: "forbidden", message: "completion sender cannot review their own completion" } }, { status: 403 });
+      }
+      if (policy === "owner" && identity.owner !== undefined && senderOwner !== undefined && identity.owner === senderOwner) {
+        return Response.json({ error: { code: "forbidden", message: "same owner cannot review this completion" } }, { status: 403 });
+      }
+      const now = Date.now();
+      const state: CompletionReviewState = action === "approve" ? "approved" : "rejected";
+      this.ctx.storage.sql.exec(
+        `UPDATE messages
+            SET completion_review_state = ?,
+                completion_reviewed_by = ?,
+                completion_reviewed_by_kind = ?,
+                completion_reviewed_by_owner = ?,
+                completion_reviewed_at = ?,
+                completion_review_reason = ?,
+                rev_seq = ?
+          WHERE seq = ?`,
+        state,
+        identity.name,
+        identity.kind,
+        identity.owner ?? null,
+        now,
+        action === "reject" ? reason : null,
+        this.nextRevSeq(),
+        seq,
+      );
+      const updated = this.ctx.storage.sql.exec("SELECT * FROM messages WHERE seq = ?", seq).one();
+      const message = this.rowToFrame(updated);
+      this.broadcastFrame(this.messageUpdate("review", identity, message, now));
+      const replyBody =
+        action === "approve"
+          ? reason === ""
+            ? `review approved #${seq}`
+            : `review approved #${seq}: ${reason}`
+          : `@${senderName} review rejected #${seq}: ${reason}`;
+      const mentions = action === "reject" ? [senderName] : [];
+      const reply = this.insertReviewerReply(identity, replyBody, mentions, seq, now);
+      this.broadcastFrame(reply);
+      await this.afterSend(reply);
+      return Response.json({ message, reply });
+    }
     if (url.pathname === "/internal/search" && request.method === "GET") {
       const query = (url.searchParams.get("q") ?? "").trim();
       if (query.length === 0) {
@@ -1759,7 +1888,11 @@ export class ChannelDO extends Server<Env> {
       await this.closeInactiveConnections();
       for (const f of out.frames) this.broadcastFrame(f);
       await this.afterSend(out.frames[0] as MsgFrame);
-      return Response.json({ seq: out.seq });
+      const sent = out.frames[0] as MsgFrame;
+      return Response.json({
+        seq: out.seq,
+        ...(sent.completion_review === undefined ? {} : { completion_review: sent.completion_review }),
+      });
     }
     if (url.pathname === "/internal/webhooks" && request.method === "GET") {
       // 列表不回 secret 明文（spec §7）
@@ -1951,6 +2084,14 @@ export class ChannelDO extends Server<Env> {
             ...(effectiveRole === undefined ? {} : { role: effectiveRole }),
             ...(roleSource === undefined ? {} : { role_source: roleSource }),
             ...(frame.completion_artifact !== undefined ? { completion_artifact: frame.completion_artifact } : {}),
+            ...(frame.completion_artifact !== undefined && this.getMeta("completion_gate") === "reviewer"
+              ? {
+                  completion_review: {
+                    state: "pending_review",
+                    policy: (this.getMeta("completion_review_policy") ?? "sender") as CompletionReviewPolicy,
+                  },
+                }
+              : {}),
             ts: now,
           }
         : {
@@ -1973,9 +2114,9 @@ export class ChannelDO extends Server<Env> {
          seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
          status_decision_json, status_workflow_json,
-         sender_role, sender_role_source, completion_artifact_json, ts
+         sender_role, sender_role_source, completion_artifact_json, completion_review_state, completion_review_policy, ts
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       seq,
       identity.name,
       identity.kind,
@@ -1998,6 +2139,8 @@ export class ChannelDO extends Server<Env> {
       frame.kind === "message" && frame.completion_artifact !== undefined
         ? JSON.stringify(frame.completion_artifact)
         : null,
+      msg.completion_review?.state ?? null,
+      msg.completion_review?.policy ?? null,
       now,
     );
     this.linkWakeResume(identity.name, msg);

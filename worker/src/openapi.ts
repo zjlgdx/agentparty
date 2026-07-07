@@ -540,6 +540,39 @@ export const openapiDocument = {
         },
       },
     },
+    "/api/channels/{slug}/messages/{seq}/review": {
+      post: {
+        summary: "approve or reject a pending review-gated completion",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "seq", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["action"],
+                properties: {
+                  action: { type: "string", enum: ["approve", "reject"] },
+                  reason: { type: "string", description: "required when action=reject; public" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "{message,reply}; broadcasts message_update(review) and reviewer reply" },
+          "400": { description: "invalid action, target, or missing reject reason" },
+          "403": { description: "readonly, self-review, or same-owner review is not allowed" },
+          "404": { description: "channel or message not found" },
+          "409": { description: "completion review is already final or not pending" },
+          "410": { description: "channel archived" },
+        },
+      },
+    },
     "/api/channels/{slug}/webhooks": {
       get: {
         summary: "list outbound webhooks (secret is never returned)",

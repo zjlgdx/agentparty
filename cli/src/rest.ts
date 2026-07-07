@@ -10,6 +10,7 @@ import {
   type ChannelMode,
   type CollaborationRole,
   type CompletionGate,
+  type CompletionReview,
   type CompletionReviewPolicy,
   type MsgFrame,
   type PresenceEntry,
@@ -23,7 +24,7 @@ import {
 import pkg from "../package.json" with { type: "json" };
 
 export type { ChannelMode, WebhookFilter };
-export type { CompletionGate, CompletionReviewPolicy };
+export type { CompletionGate, CompletionReview, CompletionReviewPolicy };
 export type { CaptureKind, CaptureRecord };
 
 // 频道可见性：public = 任何鉴权身份可进；private（默认）= 仅 leo 的 ap_ token + 房主（spec §3.2）
@@ -319,6 +320,20 @@ export async function reviseMessage(
   })) as { message: MsgFrame; superseded?: MsgFrame };
 }
 
+export async function reviewCompletion(
+  server: string,
+  token: string,
+  slug: string,
+  seq: number,
+  body: { action: "approve" | "reject"; reason?: string },
+): Promise<{ message: MsgFrame; reply: MsgFrame }> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/messages/${seq}/review`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as { message: MsgFrame; reply: MsgFrame };
+}
+
 export async function fetchWakeDeliveries(
   server: string,
   token: string,
@@ -443,12 +458,12 @@ export async function postMessage(
   token: string,
   slug: string,
   payload: MessagePayload,
-): Promise<{ seq: number }> {
+): Promise<{ seq: number; completion_review?: CompletionReview }> {
   return (await req(server, `/api/channels/${encodeURIComponent(slug)}/messages`, {
     method: "POST",
     headers: bearerJson(token),
     body: JSON.stringify(payload),
-  })) as { seq: number };
+  })) as { seq: number; completion_review?: CompletionReview };
 }
 
 export async function archiveChannel(server: string, token: string, slug: string): Promise<void> {
