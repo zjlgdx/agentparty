@@ -301,15 +301,133 @@
 
 /* ---- presence 条 ---- */
 .presence-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 8px;
+  flex: none;
+}
+.presence-meta,
+.presence-strip {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.presence-meta {
+  gap: 7px;
+  flex: none;
+}
+.presence-strip {
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  padding: 2px 2px 5px;
+}
+.presence-group {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  max-width: min(430px, 76vw);
+  padding: 3px 8px;
+  border: 2px solid var(--d-ink);
+  border-radius: 11px 7px 12px 6px / 7px 12px 6px 11px;
+  background: var(--t-panel);
+  box-shadow: 1.5px 2px 0 var(--d-shadow);
+}
+.presence-group--blocked { background: var(--d-red-soft); }
+.presence-group--full {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  width: 100%;
+  max-width: 100%;
+}
+.presence-group-head,
+.presence-group-agents,
+.presence-agent-chip {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.presence-group-head {
+  gap: 6px;
+}
+.presence-group-label {
+  min-width: 0;
+  max-width: min(210px, 28vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--ah, 220) 58% var(--agent-l-name));
+  font-weight: 800;
+  font-size: 12px;
+}
+.presence-group-count {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--t-faint);
+  border-radius: 999px;
+  color: var(--t-dim);
+  background: var(--t-panel2);
+  font-size: 10px;
+}
+.presence-group-agents {
+  gap: 4px;
+  overflow: hidden;
+}
+.presence-agent-chip {
+  flex: 0 1 auto;
+  gap: 4px;
+  min-width: 0;
+  max-width: 150px;
+  padding: 1px 5px;
+  border: 1px solid var(--t-faint);
+  border-radius: 999px;
+  background: var(--t-panel2);
+  color: var(--t-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.presence-agent-chip > span:not(.d-dot):first-of-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.presence-agent-role {
+  flex: none;
+  color: var(--t-dim);
+}
+.presence-agent-more,
+.presence-agent-empty {
+  flex: none;
+  color: var(--t-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.presence-group-detail {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 4px 10px;
-  /* chat-first：agent 多时封顶两行高度可滚，别把对话流挤出首屏 */
-  max-height: 96px;
-  overflow-y: auto;
+  gap: 7px;
+  padding-top: 4px;
+  border-top: 1px solid var(--t-faint);
+}
+.presence-summary,
+.presence-alert {
   flex: none;
+  font-size: 11px;
+  color: var(--t-dim);
+  white-space: nowrap;
+}
+.presence-alert {
+  padding: 1px 6px;
+  border: 1px solid var(--d-red);
+  border-radius: 999px;
+  color: var(--d-red);
+  background: var(--d-red-soft);
 }
 
 /* chat-first：协调/元信息面板默认折叠成一行，消息流才是主视图 */
@@ -334,15 +452,28 @@
 .chan-panels[open] { max-height: 46vh; overflow-y: auto; }
 .chan-panels > *:not(summary) { margin: 6px 10px; }
 .presence-pill {
-  max-width: 100%;
+  flex: 0 1 auto;
+  max-width: min(300px, 42vw);
   min-width: 0;
-  font-size: 13px;
+  min-height: 30px;
+  padding: 3px 8px;
+  font-size: 12px;
+  box-shadow: 1.5px 2px 0 var(--d-shadow);
+  overflow: hidden;
+  white-space: nowrap;
   cursor: default;
+}
+.presence-pill--full {
+  max-width: 100%;
+}
+.presence-strip .presence-pill {
+  flex: 0 0 auto;
+  max-width: min(300px, 72vw);
 }
 .presence-pill--blocked { background: var(--d-red-soft); }
 .presence-pill--active-host { background: var(--d-green-soft); }
 .presence-name {
-  max-width: 150px;
+  max-width: min(160px, 22vw);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -354,7 +485,7 @@
   font-weight: 400;
   color: var(--t-muted);
   min-width: 0;
-  max-width: min(120px, 32vw);
+  max-width: min(150px, 24vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -421,6 +552,46 @@
   background: var(--d-green-soft);
 }
 .presence-ts { font-size: 10px; font-weight: 400; color: var(--t-dim); }
+.presence-more {
+  position: relative;
+  flex: none;
+}
+.presence-more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 2px 8px;
+  border: 1.5px solid var(--t-faint);
+  border-radius: 8px;
+  color: var(--t-muted);
+  background: var(--t-panel2);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.presence-more > summary::-webkit-details-marker { display: none; }
+.presence-more[open] > summary {
+  border-color: var(--d-ink);
+  background: var(--d-yellow);
+  color: var(--d-ink);
+}
+.presence-more-list {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 8px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  width: min(720px, calc(100vw - 48px));
+  max-height: 44vh;
+  overflow: auto;
+  padding: 10px;
+  border: 2px solid var(--d-ink);
+  border-radius: 10px 8px 12px 7px / 8px 12px 7px 10px;
+  background: var(--t-panel);
+  box-shadow: 4px 5px 0 var(--d-shadow);
+}
 .presence-kick {
   flex: none;
   min-height: 22px;
@@ -444,13 +615,6 @@
   cursor: wait;
 }
 .presence-empty { font-size: 12px; color: var(--t-dim); }
-/* 参与者计数：presence 条右端，连接状态左边 */
-.presence-count {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--t-dim);
-  white-space: nowrap;
-}
 
 /* party 频道徽章：复用 .d-hl 蜡笔黄高亮，缩小 + marker 字 + 手绘歪斜 */
 .party-badge {
@@ -1391,6 +1555,52 @@
 .vis-error { font-size: 12px; color: var(--d-red, #c0392b); }
 .agent-join-err { flex: 1; min-width: 0; }
 
+/* ---- 邀请链接（issue #38 web，moderator 专属） ---- */
+.joinlink { position: relative; }
+.joinlink-btn { font-size: 13px; }
+.joinlink-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(440px, 88vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 13px;
+  background: var(--t-panel);
+  border: 2.5px solid var(--d-ink);
+  border-radius: 12px 8px 13px 7px / 8px 12px 7px 11px;
+  box-shadow: 4px 5px 0 var(--d-shadow);
+}
+.joinlink-hint { font-size: 12px; color: var(--t-dim); }
+.joinlink-gen-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.joinlink-expiry { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.joinlink-expiry select {
+  font: inherit;
+  padding: 3px 6px;
+  border: 2px solid var(--d-ink);
+  border-radius: 6px 4px 7px 3px / 4px 6px 3px 5px;
+  background: var(--t-panel);
+  color: var(--fg, inherit);
+}
+.joinlink-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.joinlink-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1.5px dashed var(--d-ink);
+  border-radius: 7px;
+}
+.joinlink-url { font-size: 11.5px; word-break: break-all; flex: 1 1 200px; }
+.joinlink-meta { font-size: 11px; color: var(--t-dim); }
+.joinlink-copy, .joinlink-revoke { font-size: 12px; padding: 2px 8px; }
+.joinlink-revoke { color: var(--d-red, #c0392b); }
+.joinlink-empty { font-size: 12px; color: var(--t-dim); margin: 0; }
+.joinlink-error { font-size: 12px; color: var(--d-red, #c0392b); margin: 0; }
+
 /* 浮层：脱离 grid 流铺满视口（沿用抽屉遮罩修复的做法），居中放手绘卡 */
 .agent-join-overlay {
   position: fixed;
@@ -1761,6 +1971,31 @@
   .side { flex-direction: row; overflow-x: auto; align-items: center; padding-bottom: 4px; }
   .side-label { display: none; }
   .chan-pill { width: auto; flex: none; }
+  .presence-bar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .presence-meta {
+    grid-column: 1 / -1;
+  }
+  .presence-strip {
+    grid-column: 1 / 2;
+  }
+  .presence-more-list {
+    right: auto;
+    left: 0;
+    width: calc(100vw - 32px);
+  }
+  .presence-group {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 72vw;
+  }
+  .presence-group-agents {
+    display: none;
+  }
+  .presence-group-label {
+    max-width: 52vw;
+  }
+  .presence-name { max-width: 42vw; }
   .presence-note { max-width: 120px; }
 }
 

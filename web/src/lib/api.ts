@@ -280,6 +280,61 @@ export async function resetGuard(token: string, slug: string): Promise<void> {
   if (!res.ok) throw new Error(`POST /api/channels/${slug}/reset-guard failed (${res.status})`);
 }
 
+// 私有频道邀请链接（issue #38 web）：点链接 → OIDC 登录 → 加入为成员。moderator（房主）专属，
+// 服务端 isChannelModerator 强制；前端只对 canModerate 渲染入口，隐私性靠「只有创建者能生成」。
+export interface JoinLinkInfo {
+  code: string;
+  url?: string;
+  channel_slug: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number | null;
+  max_uses: number | null;
+  uses: number;
+  revoked_at: number | null;
+}
+
+export async function createJoinLink(
+  token: string,
+  slug: string,
+  opts: { expiresInSec?: number; maxUses?: number } = {},
+): Promise<JoinLinkInfo> {
+  const body: Record<string, number> = {};
+  if (opts.expiresInSec !== undefined) body.expires_in_sec = opts.expiresInSec;
+  if (opts.maxUses !== undefined) body.max_uses = opts.maxUses;
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/join-links`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("only the channel owner can create invite links");
+  if (res.status === 400) throw new ValidationError("invalid expiry or max-uses");
+  if (!res.ok) throw new Error(`POST /api/channels/${slug}/join-links failed (${res.status})`);
+  return (await res.json()) as JoinLinkInfo;
+}
+
+export async function listJoinLinks(token: string, slug: string): Promise<JoinLinkInfo[]> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/join-links`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("only the channel owner can view invite links");
+  if (!res.ok) throw new Error(`GET /api/channels/${slug}/join-links failed (${res.status})`);
+  const data = (await res.json()) as { links: JoinLinkInfo[] };
+  return data.links;
+}
+
+export async function revokeJoinLink(token: string, slug: string, code: string): Promise<void> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/join-links/${encodeURIComponent(code)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("only the channel owner can revoke invite links");
+  if (!res.ok && res.status !== 404) throw new Error(`DELETE join-link failed (${res.status})`);
+}
+
 export async function kickParticipant(token: string, slug: string, name: string, mode: "disconnect" | "remove" = "disconnect"): Promise<void> {
   const body = mode === "remove" ? { name, mode } : { name };
   const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/kick`, {

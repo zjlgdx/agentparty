@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { buildHostBoard, type HostBoard, type MsgFrame, type SearchHit } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { VisibilityToggle } from "../components/VisibilityToggle";
+import { JoinLink } from "../components/JoinLink";
 import { Composer } from "../components/Composer";
 import { Markdown } from "../components/Markdown";
 import { MessageCard } from "../components/MessageCard";
@@ -1086,6 +1087,7 @@ export function ChannelPage({
               onAuthFailed={onAuthFailed}
             />
           )}
+          {canModerate && <JoinLink slug={slug} token={token} onAuthFailed={onAuthFailed} />}
         </div>
       )}
       <CharterBanner
