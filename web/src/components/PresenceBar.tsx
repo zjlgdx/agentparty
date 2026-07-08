@@ -191,11 +191,21 @@ export function PresenceBar({
     if (rank !== 0) return rank;
     return a.label.localeCompare(b.label);
   });
+  const [hoveredGroup, setHoveredGroup] = useState<{ key: string; left: number; top: number; width: number } | null>(null);
   const visibleGroups = sortedGroups.slice(0, 4);
   const overflowGroups = sortedGroups.slice(4);
   const liveCount = items.filter((it) => it.state !== "offline").length;
   const blockedCount = items.filter((it) => it.state === "blocked").length;
   const duplicateCount = items.filter((it) => it.connectionCount > 1).length;
+  const activePopoverGroup = hoveredGroup === null ? null : sortedGroups.find((group) => group.key === hoveredGroup.key) ?? null;
+
+  function showGroupPopover(group: PresenceGroup, rect: DOMRect) {
+    const margin = 10;
+    const width = Math.min(520, window.innerWidth - margin * 2);
+    const left = Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin));
+    const top = Math.min(rect.bottom + 8, Math.max(margin, window.innerHeight - 120));
+    setHoveredGroup({ key: group.key, left, top, width });
+  }
 
   function renderItem(it: Item, mode: "compact" | "full") {
     const badge = roleBadge(it, now);
@@ -311,6 +321,7 @@ export function PresenceBar({
     return (
       <section
         key={group.key}
+        tabIndex={full ? undefined : 0}
         className={
           `presence-group${blocked > 0 ? " presence-group--blocked" : ""}` +
           `${duplicateSessions > 0 ? " presence-group--duplicate" : ""}` +
@@ -318,6 +329,18 @@ export function PresenceBar({
         }
         title={title}
         style={{ "--ah": agentHue(group.label) } as CSSProperties}
+        onMouseEnter={(e) => {
+          if (!full) showGroupPopover(group, e.currentTarget.getBoundingClientRect());
+        }}
+        onMouseLeave={() => {
+          if (!full) setHoveredGroup(null);
+        }}
+        onFocus={(e) => {
+          if (!full) showGroupPopover(group, e.currentTarget.getBoundingClientRect());
+        }}
+        onBlur={() => {
+          if (!full) setHoveredGroup(null);
+        }}
       >
         <div className="presence-group-head">
           <span className={`d-dot d-dot--${representative.state}`} />
@@ -376,6 +399,28 @@ export function PresenceBar({
       <span className="conn t-mono" data-s={status} role="status" aria-live="polite">
         {status === "open" ? "● live" : `◌ ${status}…`}
       </span>
+      {activePopoverGroup !== null && hoveredGroup !== null && (
+        <div
+          className="presence-popover"
+          role="tooltip"
+          style={{
+            left: hoveredGroup.left,
+            top: hoveredGroup.top,
+            width: hoveredGroup.width,
+            "--ah": agentHue(activePopoverGroup.label),
+          } as CSSProperties}
+        >
+          <header className="presence-popover-head">
+            <span className="presence-popover-title">{activePopoverGroup.label}</span>
+            <span className="t-mono presence-popover-count">
+              {activePopoverGroup.items.filter((item) => item.state !== "offline").length}/{activePopoverGroup.items.length} live
+            </span>
+          </header>
+          <div className="presence-popover-list">
+            {activePopoverGroup.items.map((item) => renderItem(item, "full"))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

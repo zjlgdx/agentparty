@@ -1,7 +1,7 @@
 // 频道页：presence 条 + 实时消息流 + 内联错误条幅 + 插话框。
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type PresenceEntry, type ReadCursor, type SearchHit, type Sender, type WakeDelivery } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { AgentTokens } from "../components/AgentTokens";
@@ -144,6 +144,8 @@ interface RoleDraft {
   responsibility: string;
 }
 
+type ChannelPanel = "charter" | "roles" | "coordination" | "search";
+
 function roleDraftFrom(role: ChannelRoleInfo): RoleDraft {
   return { role: role.role, responsibility: role.responsibility ?? "" };
 }
@@ -199,6 +201,7 @@ function CharterBanner({
   saving,
   editing,
   error,
+  lockedOpen = false,
   onToggle,
   onDraft,
   onEdit,
@@ -213,6 +216,7 @@ function CharterBanner({
   saving: boolean;
   editing: boolean;
   error: string | null;
+  lockedOpen?: boolean;
   onToggle: () => void;
   onDraft: (value: string) => void;
   onEdit: () => void;
@@ -224,11 +228,19 @@ function CharterBanner({
   return (
     <section className={"charter-banner" + (updated ? " charter-banner--updated" : "")}>
       <header className="charter-head">
-        <button className="charter-toggle" type="button" onClick={onToggle} aria-expanded={open}>
-          <span>{t("Channel.charter.label")}</span>
-          {charter ? <span className="t-mono">rev {charter.charter_rev}</span> : null}
-          {updated ? <span className="charter-updated">{t("Channel.charter.updated")}</span> : null}
-        </button>
+        {lockedOpen ? (
+          <div className="charter-toggle charter-toggle--static">
+            <span>{t("Channel.charter.label")}</span>
+            {charter ? <span className="t-mono">rev {charter.charter_rev}</span> : null}
+            {updated ? <span className="charter-updated">{t("Channel.charter.updated")}</span> : null}
+          </div>
+        ) : (
+          <button className="charter-toggle" type="button" onClick={onToggle} aria-expanded={open}>
+            <span>{t("Channel.charter.label")}</span>
+            {charter ? <span className="t-mono">rev {charter.charter_rev}</span> : null}
+            {updated ? <span className="charter-updated">{t("Channel.charter.updated")}</span> : null}
+          </button>
+        )}
         {canModerate && (
           <button className="d-btn charter-edit" type="button" onClick={onEdit}>
             {t("Channel.charter.edit")}
@@ -280,6 +292,7 @@ function DivisionBoard({
   onNewRoleDraft,
   onSaveRole,
   onDeleteRole,
+  forceOpen = false,
 }: {
   canModerate: boolean;
   roles: ChannelRoleInfo[];
@@ -295,6 +308,7 @@ function DivisionBoard({
   onNewRoleDraft: (draft: RoleDraft) => void;
   onSaveRole: (name: string, draft: RoleDraft) => void;
   onDeleteRole: (name: string) => void;
+  forceOpen?: boolean;
 }) {
   const t = useT();
   const identityByName = new Map(identities.map((identity) => [identity.name, identity]));
@@ -320,7 +334,7 @@ function DivisionBoard({
     .filter((item) => item.count > 0);
 
   return (
-    <details className="role-board" aria-label={t("Channel.roles.label")}>
+    <details className="role-board" aria-label={t("Channel.roles.label")} open={forceOpen ? true : undefined}>
       <summary className="role-board-head">
         <div>
           <h2>{t("Channel.roles.label")}</h2>
@@ -447,6 +461,45 @@ function DivisionBoard({
         {roleError !== null && <p className="banner banner--red">{roleError}</p>}
       </div>
     </details>
+  );
+}
+
+function ChannelPanelModal({
+  title,
+  subtitle,
+  onClose,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const t = useT();
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="channel-panel-overlay" role="dialog" aria-modal="true" aria-label={title}>
+      <button className="channel-panel-scrim" type="button" aria-label={t("Channel.tools.close")} onClick={onClose} />
+      <section className="channel-panel-card">
+        <header className="channel-panel-head">
+          <div className="channel-panel-titlebox">
+            <h2>{title}</h2>
+            {subtitle !== undefined && subtitle !== "" && <p className="t-mono">{subtitle}</p>}
+          </div>
+          <button className="d-btn channel-panel-close" type="button" onClick={onClose}>
+            {t("Channel.tools.close")}
+          </button>
+        </header>
+        <div className="channel-panel-body">{children}</div>
+      </section>
+    </div>
   );
 }
 
@@ -924,7 +977,6 @@ export function ChannelPage({
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [charter, setCharter] = useState<ChannelCharter | null>(null);
-  const [charterOpen, setCharterOpen] = useState(false);
   const [wakeDeliveries, setWakeDeliveries] = useState<WakeDelivery[]>([]); // @ 唤醒台账（webhook 侧硬证据）
   const [charterEditing, setCharterEditing] = useState(false);
   const [charterDraft, setCharterDraft] = useState("");
@@ -937,6 +989,7 @@ export function ChannelPage({
   const [roleSaving, setRoleSaving] = useState<string | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
   const [seenCharterRev, setSeenCharterRev] = useState(() => readSeenCharterRev(slug));
+  const [activePanel, setActivePanel] = useState<ChannelPanel | null>(null);
   // 可见性可在会话内切换（issue #38 web），本地 state 让顶栏徽章即时反映，无需重载
   const [localPublic, setLocalPublic] = useState(isPublic);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -1026,7 +1079,6 @@ export function ChannelPage({
 
   useEffect(() => {
     setSeenCharterRev(readSeenCharterRev(slug));
-    setCharterOpen(false);
     setCharterEditing(false);
     void loadCharter();
     void loadRoles();
@@ -1291,19 +1343,15 @@ export function ChannelPage({
     setSeenSeq(lastSeq);
   }, [lastSeq, seenKey]);
 
-  const toggleCharter = useCallback(() => {
-    setCharterOpen((current) => {
-      const next = !current;
-      if (next && charter !== null) {
-        writeSeenCharterRev(slug, charter.charter_rev);
-        setSeenCharterRev(charter.charter_rev);
-      }
-      return next;
-    });
+  const openPanel = useCallback((panel: ChannelPanel) => {
+    if (panel === "charter" && charter !== null) {
+      writeSeenCharterRev(slug, charter.charter_rev);
+      setSeenCharterRev(charter.charter_rev);
+    }
+    setActivePanel(panel);
   }, [charter, slug]);
 
   const editCharter = useCallback(() => {
-    setCharterOpen(true);
     setCharterEditing(true);
     setCharterDraft(charter?.charter ?? "");
     setCharterError(null);
@@ -1324,7 +1372,6 @@ export function ChannelPage({
         setCharter(body);
         setCharterDraft(body.charter ?? "");
         setCharterEditing(false);
-        setCharterOpen(true);
         writeSeenCharterRev(slug, body.charter_rev);
         setSeenCharterRev(body.charter_rev);
       })
@@ -1611,6 +1658,7 @@ export function ChannelPage({
   const agentFilterActive = agentFilter.agents.length > 0;
   const totalInView = q === "" ? timelineMessages.length : searchHits.length;
   const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
+  const structuredRoleCount = channelRoles.length + selfReportedRoles(channelRoles, state.presence, channelIdentities).length;
 
   const setAgentMode = useCallback((mode: AgentFilterMode) => {
     setAgentFilter((current) => ({ ...current, mode }));
@@ -1687,6 +1735,107 @@ export function ChannelPage({
     );
   }
 
+  const coordinationContent = (
+    <>
+      {catchupDigest !== null && catchupDigest.messages > 0 && seenSeq !== null && (
+        <CatchupPanel
+          digest={catchupDigest}
+          seenSeq={seenSeq}
+          latestSeq={lastSeq}
+          onCaughtUp={onCaughtUp}
+        />
+      )}
+      {knownSenders.length > 0 && (
+        <AgentFilterPanel
+          senders={knownSenders}
+          filter={agentFilter}
+          visible={visibleInView}
+          total={totalInView}
+          onMode={setAgentMode}
+          onToggle={toggleAgentFilter}
+          onClear={clearAgentFilter}
+        />
+      )}
+      {q === "" && <HostBoardPanel board={hostBoard} />}
+      {q === "" && <TeamPanel teams={teamSummaries} />}
+      {q === "" && <DecisionPanel messages={state.messages} />}
+      {q === "" && (
+        <CompletionPanel
+          completions={completions}
+          visible={visibleCompletions.length}
+          enabled={completionOnly}
+          onToggle={() => setCompletionOnly((current) => !current)}
+          onJump={jumpToCompletion}
+        />
+      )}
+    </>
+  );
+
+  const searchContent = (
+    <div className="chan-search-panel">
+      <div className="chan-search-row">
+        <input
+          className="t-mono chan-search"
+          type="search"
+          value={search}
+          spellCheck={false}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t("Channel.search.placeholder")}
+          aria-label="search messages"
+          autoFocus
+        />
+        {q !== "" && (
+          <span className="t-mono chan-search-count">
+            {searchLoading
+              ? "searching"
+              : agentFilterActive
+                ? `${visibleSearchHits.length}/${searchHits.length} hits`
+                : `${searchHits.length} hits`}
+          </span>
+        )}
+      </div>
+      {q !== "" && (
+        <div className="chan-search-filters">
+          <input
+            className="t-mono chan-filter-input"
+            value={searchFrom}
+            spellCheck={false}
+            list={senderListId}
+            onChange={(e) => setSearchFrom(e.target.value)}
+            placeholder="from agent"
+            aria-label="search sender filter"
+          />
+          <datalist id={senderListId}>
+            {knownSenders.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          <input
+            className="t-mono chan-filter-input"
+            type="number"
+            min={0}
+            step={1}
+            value={searchSince}
+            onChange={(e) => setSearchSince(e.target.value)}
+            placeholder="since seq"
+            aria-label="search since sequence"
+          />
+          <input
+            className="t-mono chan-filter-input chan-filter-input--short"
+            type="number"
+            min={1}
+            max={1000}
+            step={1}
+            value={searchLimit}
+            onChange={(e) => setSearchLimit(e.target.value)}
+            placeholder="limit"
+            aria-label="search result limit"
+          />
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="chan">
       <PresenceBar
@@ -1702,8 +1851,34 @@ export function ChannelPage({
       />
       {kickError !== null && <p className="banner banner--red">{kickError}</p>}
       {archiveError !== null && <p className="banner banner--red">{archiveError}</p>}
-      {(canMintAgent || canModerate) && !state.archived && (
-        <div className="chan-toolbar">
+      <div className="chan-toolstrip" aria-label={t("Channel.tools.label")}>
+        <div className="chan-tool-buttons">
+          <button
+            type="button"
+            className={"d-btn chan-tool-btn" + (charterUpdated ? " chan-tool-btn--updated" : "")}
+            onClick={() => openPanel("charter")}
+          >
+            <span>{t("Channel.tools.charter")}</span>
+            {charter !== null && <span className="t-mono chan-tool-badge">rev {charter.charter_rev}</span>}
+            {charterUpdated && <span className="t-mono chan-tool-badge chan-tool-badge--hot">{t("Channel.tools.updated")}</span>}
+          </button>
+          <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("roles")}>
+            <span>{t("Channel.tools.roles")}</span>
+            <span className="t-mono chan-tool-badge">{structuredRoleCount}</span>
+          </button>
+          <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("coordination")}>
+            <span>{t("Channel.tools.coordination")}</span>
+            {(agentFilterActive || completionOnly) && (
+              <span className="t-mono chan-tool-badge chan-tool-badge--hot">{t("Channel.tools.active")}</span>
+            )}
+          </button>
+          <button type="button" className={"d-btn chan-tool-btn" + (q !== "" ? " is-active" : "")} onClick={() => openPanel("search")}>
+            <span>{t("Channel.tools.search")}</span>
+            {q !== "" && <span className="t-mono chan-tool-badge">{searchLoading ? "..." : searchHits.length}</span>}
+          </button>
+        </div>
+        {(canMintAgent || canModerate) && !state.archived && (
+          <div className="chan-admin-actions">
           {canMintAgent && accountKey !== null && (
             <AgentJoin
               slug={slug}
@@ -1744,138 +1919,65 @@ export function ChannelPage({
               {archiving ? t("Channel.archive.archiving") : t("Channel.archive.button")}
             </button>
           )}
-        </div>
-      )}
-      <CharterBanner
-        charter={charter}
-        open={charterOpen}
-        canModerate={canModerate}
-        updated={charterUpdated}
-        draft={charterDraft}
-        saving={charterSaving}
-        editing={charterEditing}
-        error={charterError}
-        onToggle={toggleCharter}
-        onDraft={setCharterDraft}
-        onEdit={editCharter}
-        onCancel={cancelCharterEdit}
-        onSave={saveCharter}
-      />
-      <DivisionBoard
-        canModerate={canModerate}
-        roles={channelRoles}
-        roleDrafts={roleDrafts}
-        roleError={roleError}
-        roleSaving={roleSaving}
-        roleName={newRoleName}
-        roleDraft={newRoleDraft}
-        identities={channelIdentities}
-        presence={state.presence}
-        onRoleDraft={updateRoleDraft}
-        onNewRoleName={setNewRoleName}
-        onNewRoleDraft={setNewRoleDraft}
-        onSaveRole={saveRole}
-        onDeleteRole={clearRole}
-      />
-      {/* chat-first：这些协调/元信息面板默认折叠，避免把核心对话流挤出首屏。展开查看 digest/过滤/host board 等。 */}
-      <details className="chan-panels">
-        <summary className="chan-panels-summary t-mono">
-          {t("Channel.panels.summary")}
-        </summary>
-        {catchupDigest !== null && catchupDigest.messages > 0 && seenSeq !== null && (
-          <CatchupPanel
-            digest={catchupDigest}
-            seenSeq={seenSeq}
-            latestSeq={lastSeq}
-            onCaughtUp={onCaughtUp}
-          />
-        )}
-        {knownSenders.length > 0 && (
-          <AgentFilterPanel
-            senders={knownSenders}
-            filter={agentFilter}
-            visible={visibleInView}
-            total={totalInView}
-            onMode={setAgentMode}
-            onToggle={toggleAgentFilter}
-            onClear={clearAgentFilter}
-          />
-        )}
-        {q === "" && <HostBoardPanel board={hostBoard} />}
-        {q === "" && <TeamPanel teams={teamSummaries} />}
-        {q === "" && <DecisionPanel messages={state.messages} />}
-        {q === "" && (
-          <CompletionPanel
-            completions={completions}
-            visible={visibleCompletions.length}
-            enabled={completionOnly}
-            onToggle={() => setCompletionOnly((current) => !current)}
-            onJump={jumpToCompletion}
-          />
-        )}
-      </details>
-      {(state.messages.length > 0 || q !== "") && (
-        <div className="chan-search-panel">
-          <div className="chan-search-row">
-            <input
-              className="t-mono chan-search"
-              type="search"
-              value={search}
-              spellCheck={false}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t("Channel.search.placeholder")}
-              aria-label="search messages"
-            />
-            {q !== "" && (
-              <span className="t-mono chan-search-count">
-                {searchLoading
-                  ? "searching"
-                  : agentFilterActive
-                    ? `${visibleSearchHits.length}/${searchHits.length} hits`
-                    : `${searchHits.length} hits`}
-              </span>
-            )}
           </div>
-          {q !== "" && (
-            <div className="chan-search-filters">
-              <input
-                className="t-mono chan-filter-input"
-                value={searchFrom}
-                spellCheck={false}
-                list={senderListId}
-                onChange={(e) => setSearchFrom(e.target.value)}
-                placeholder="from agent"
-                aria-label="search sender filter"
-              />
-              <datalist id={senderListId}>
-                {knownSenders.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-              <input
-                className="t-mono chan-filter-input"
-                type="number"
-                min={0}
-                step={1}
-                value={searchSince}
-                onChange={(e) => setSearchSince(e.target.value)}
-                placeholder="since seq"
-                aria-label="search since sequence"
-              />
-              <input
-                className="t-mono chan-filter-input chan-filter-input--short"
-                type="number"
-                min={1}
-                max={1000}
-                step={1}
-                value={searchLimit}
-                onChange={(e) => setSearchLimit(e.target.value)}
-                placeholder="limit"
-                aria-label="search result limit"
-              />
-            </div>
+        )}
+      </div>
+      {activePanel !== null && (
+        <ChannelPanelModal
+          title={
+            activePanel === "charter" ? t("Channel.tools.charter") :
+            activePanel === "roles" ? t("Channel.tools.roles") :
+            activePanel === "coordination" ? t("Channel.tools.coordination") :
+            t("Channel.tools.search")
+          }
+          subtitle={
+            activePanel === "charter" && charter !== null ? `rev ${charter.charter_rev}` :
+            activePanel === "roles" ? t("Channel.roles.count", { count: String(structuredRoleCount) }) :
+            activePanel === "search" && q !== "" ? `${searchHits.length} hits` :
+            undefined
+          }
+          onClose={() => setActivePanel(null)}
+        >
+          {activePanel === "charter" && (
+            <CharterBanner
+              charter={charter}
+              open={true}
+              canModerate={canModerate}
+              updated={charterUpdated}
+              draft={charterDraft}
+              saving={charterSaving}
+              editing={charterEditing}
+              error={charterError}
+              lockedOpen
+              onToggle={() => {}}
+              onDraft={setCharterDraft}
+              onEdit={editCharter}
+              onCancel={cancelCharterEdit}
+              onSave={saveCharter}
+            />
           )}
-        </div>
+          {activePanel === "roles" && (
+            <DivisionBoard
+              canModerate={canModerate}
+              roles={channelRoles}
+              roleDrafts={roleDrafts}
+              roleError={roleError}
+              roleSaving={roleSaving}
+              roleName={newRoleName}
+              roleDraft={newRoleDraft}
+              identities={channelIdentities}
+              presence={state.presence}
+              forceOpen
+              onRoleDraft={updateRoleDraft}
+              onNewRoleName={setNewRoleName}
+              onNewRoleDraft={setNewRoleDraft}
+              onSaveRole={saveRole}
+              onDeleteRole={clearRole}
+            />
+          )}
+          {activePanel === "coordination" && coordinationContent}
+          {activePanel === "search" && searchContent}
+        </ChannelPanelModal>
       )}
       {/* overflow-anchor:none —— 浏览器原生滚动锚定会和我们手动的 prepend 锚定打架 */}
       <div className="stream" ref={streamRef} onScroll={onScroll} style={{ overflowAnchor: "none" }}>

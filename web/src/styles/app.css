@@ -222,6 +222,9 @@
   cursor: pointer;
   text-align: left;
 }
+.charter-toggle--static {
+  cursor: default;
+}
 .charter-toggle .t-mono {
   color: var(--t-dim);
   font-size: 11px;
@@ -693,6 +696,62 @@
 }
 .presence-alert--duplicate {
   background: #fff;
+}
+.presence-popover {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  max-height: min(70vh, 520px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 2.5px solid var(--d-ink);
+  border-radius: 12px 8px 13px 7px / 8px 12px 7px 11px;
+  background: var(--t-panel);
+  box-shadow: 5px 6px 0 var(--d-shadow);
+}
+.presence-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px dashed var(--t-faint);
+}
+.presence-popover-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--ah, 220) 58% var(--agent-l-name));
+  font-weight: 800;
+}
+.presence-popover-count {
+  flex: none;
+  color: var(--t-dim);
+  font-size: 11px;
+}
+.presence-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+}
+.presence-popover .presence-pill {
+  width: 100%;
+  max-width: 100%;
+  white-space: normal;
+  align-items: center;
+}
+.presence-popover .presence-name,
+.presence-popover .presence-owner,
+.presence-popover .presence-note,
+.presence-popover .presence-context,
+.presence-popover .presence-lineage {
+  max-width: 100%;
 }
 
 /* chat-first：协调/元信息面板默认折叠成一行，消息流才是主视图 */
@@ -1855,13 +1914,53 @@
 .msg-status[data-state="blocked"] { color: var(--p-blocked); }
 .msg-status[data-state="done"] { color: var(--p-done); }
 
-/* ---- 「让 agent 加入」工具条 + 接入命令浮层 ---- */
-.chan-toolbar {
+/* ---- 频道工具条 + 接入命令浮层 ---- */
+.chan-toolstrip {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   padding: 0 4px 2px;
+}
+.chan-tool-buttons,
+.chan-admin-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.chan-tool-buttons {
+  flex: 1 1 auto;
+}
+.chan-admin-actions {
+  flex: 0 1 auto;
+  margin-left: auto;
+}
+.chan-tool-btn {
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 10px;
+  font-size: 13px;
+  background: var(--t-panel2);
+}
+.chan-tool-btn.is-active,
+.chan-tool-btn--updated {
+  border-color: var(--t-accent);
+  background: var(--d-yellow);
+}
+.chan-tool-badge {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--t-faint);
+  border-radius: 999px;
+  color: var(--t-dim);
+  background: var(--t-panel);
+  font-size: 10.5px;
+}
+.chan-tool-badge--hot {
+  color: var(--t-accent);
+  border-color: var(--t-accent);
 }
 .agent-join {
   display: flex;
@@ -2045,6 +2144,81 @@
 .archive-channel-btn:hover:not(:disabled) {
   color: #fff;
   background: var(--d-red);
+}
+
+.channel-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.channel-panel-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(20, 20, 16, 0.42);
+  cursor: default;
+}
+.channel-panel-card {
+  position: relative;
+  z-index: 1;
+  width: min(980px, calc(100vw - 28px));
+  max-height: min(88vh, 920px);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 2.5px solid var(--d-ink);
+  border-radius: 13px 9px 14px 8px / 9px 13px 8px 12px;
+  background: var(--t-panel);
+  box-shadow: 7px 8px 0 var(--d-shadow);
+}
+.channel-panel-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px 15px 11px;
+  border-bottom: 1.5px dashed var(--t-faint);
+  background: var(--t-panel2);
+}
+.channel-panel-titlebox {
+  flex: 1;
+  min-width: 0;
+}
+.channel-panel-titlebox h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.channel-panel-titlebox p {
+  margin: 3px 0 0;
+  color: var(--t-dim);
+  font-size: 11px;
+}
+.channel-panel-close {
+  flex: none;
+  font-size: 12px;
+}
+.channel-panel-body {
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 14px 14px;
+}
+.channel-panel-body .charter-banner,
+.channel-panel-body .role-board,
+.channel-panel-body .chan-search-panel {
+  margin: 0;
+}
+.channel-panel-body .charter-banner,
+.channel-panel-body .role-board {
+  box-shadow: none;
+}
+.channel-panel-body .chan-search-panel {
+  padding: 0;
 }
 
 /* 浮层：脱离 grid 流铺满视口（沿用抽屉遮罩修复的做法），居中放手绘卡 */
@@ -2757,11 +2931,31 @@
   }
   .presence-name { max-width: 42vw; }
   .presence-note { max-width: 120px; }
-  .chan-toolbar {
+  .presence-popover {
+    left: 8px !important;
+    width: calc(100vw - 16px) !important;
+    max-height: 58vh;
+  }
+  .chan-toolstrip {
     flex-wrap: nowrap;
     gap: 7px;
     overflow-x: auto;
     padding: 0 2px 1px;
+  }
+  .chan-tool-buttons,
+  .chan-admin-actions {
+    flex: none;
+    flex-wrap: nowrap;
+    gap: 7px;
+  }
+  .chan-admin-actions {
+    margin-left: 0;
+  }
+  .chan-tool-btn {
+    white-space: nowrap;
+    min-height: 32px;
+    padding: 4px 9px;
+    font-size: 12.5px;
   }
   .agent-join {
     flex: none;
@@ -2771,14 +2965,8 @@
   .agent-join-btn {
     white-space: nowrap;
   }
-  .charter-banner {
-    margin: 0 0 4px;
-  }
   .charter-head {
     padding: 6px 8px;
-  }
-  .role-board {
-    margin-top: 4px;
   }
   .role-board-head {
     padding: 7px 9px;
@@ -2793,14 +2981,19 @@
   .role-board-body {
     padding: 8px 9px 9px;
   }
-  .chan-panels {
-    margin: 0 0 1px;
+  .channel-panel-overlay {
+    align-items: stretch;
+    padding: 8px;
   }
-  .chan-panels-summary {
-    padding: 6px 9px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .channel-panel-card {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+  }
+  .channel-panel-head {
+    padding: 10px 11px 9px;
+  }
+  .channel-panel-body {
+    padding: 9px 10px 11px;
   }
   .stream {
     gap: 12px;
