@@ -6,3 +6,5 @@ dist/
 cli/party
 cli/party.exe
 .DS_Store
+.codegraph/
+assets/generated/

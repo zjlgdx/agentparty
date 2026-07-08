@@ -28,7 +28,7 @@ const COMPLETION_REVIEW_POLICIES = ["sender", "owner"] as const;
 const VISIBILITIES = ["public", "private"] as const;
 const HELP = `usage: party channel create <slug> [--title t] [--temp] [--party] [--public]
        party channel list
-       party channel archive [slug]
+       party channel archive [slug]                 archive, kick live agents, keep history
        party channel reset-guard [slug]
        party channel kick <name> [slug] [--remove]
        party channel gate reviewer|off [slug] [--policy sender|owner]
@@ -42,6 +42,9 @@ const HELP = `usage: party channel create <slug> [--title t] [--temp] [--party] 
        party channel role unset <name> [slug]
 
 Manage channels.
+
+Archived channels are terminal: live agents are kicked with an archived error, future writes/watch exits stop
+with the archived exit code, and history stays readable. Hard delete is intentionally not exposed.
 
 Options:
   --title t   channel title when creating
@@ -139,6 +142,9 @@ export async function run(argv: string[]): Promise<number> {
         }
         await archiveChannel(cfg.server, cfg.token, slug);
         console.log(`archived ${slug}`);
+        console.log("  live agents were kicked with error: archived");
+        console.log("  future watch/send calls stop with exit code 5 (archived)");
+        console.log("  history is kept; hard delete is not exposed");
         return 0;
       }
       case "reset-guard": {

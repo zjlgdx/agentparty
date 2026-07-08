@@ -4,15 +4,21 @@ import { isHelpArg, parseArgs, unknownFlagError } from "../args";
 import { handleRestError, fetchMe, RestError } from "../rest";
 import { resolveAuthDetailed } from "../oidc-cli";
 import { jsonFrame, nowTs } from "../json";
+import { resolveChannel } from "../config";
 
-const WHOAMI_FLAGS = ["json", "caps"];
-const HELP = `usage: party whoami [--json] [--caps]
+const WHOAMI_FLAGS = ["json", "caps", "rejoin"];
+const HELP = `usage: party whoami [--json] [--caps] [--rejoin]
 
 Print the current identity from /api/me.
 
 Options:
   --json   emit a structured JSON frame
-  --caps   print token capabilities and channel scope`;
+  --caps   print token capabilities and channel scope
+  --rejoin print the config path/fingerprint needed to reuse this identity in a new session`;
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 export async function run(argv: string[]): Promise<number> {
   if (isHelpArg(argv, { allowHelpPositional: true })) {
@@ -26,6 +32,7 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
   const json = flags.json === true;
+  const rejoin = flags.rejoin === true;
   let auth;
   try {
     auth = await resolveAuthDetailed();
@@ -59,6 +66,16 @@ export async function run(argv: string[]): Promise<number> {
   }
   try {
     const me = await fetchMe(auth.server, auth.token);
+    const boundChannel = resolveChannel() ?? null;
+    const rejoinInfo =
+      rejoin
+        ? {
+            config_kind: auth.config.kind,
+            config_path: auth.config.path,
+            token_fingerprint: auth.config.token_fingerprint ?? null,
+            channel: boundChannel,
+          }
+        : null;
     if (json) {
       // 原样吐 /api/me（name/email/kind/role/owner…），供工具判身份/权限，免解析人类串
       console.log(JSON.stringify(jsonFrame({
@@ -78,6 +95,7 @@ export async function run(argv: string[]): Promise<number> {
         },
         account: auth.account,
         config: auth.config,
+        ...(rejoinInfo === null ? {} : { rejoin: rejoinInfo }),
       })));
     } else {
       const who = me.email ?? me.name;
@@ -87,6 +105,21 @@ export async function run(argv: string[]): Promise<number> {
       console.log(`account: ${auth.account.present ? `${auth.account.email ?? auth.account.sub ?? "present"} present server=${auth.account.server}` : `absent path=${auth.account.path}`}`);
       console.log(`config: ${auth.config.path ? `${auth.config.kind} ${auth.config.path} token=${auth.config.token_fingerprint ?? "none"}` : "none"}`);
       console.log(`auth-source: ${auth.auth_source}`);
+      if (rejoin) {
+        console.log("rejoin:");
+        if (auth.config.path) {
+          const prefix = `AGENTPARTY_CONFIG=${shellSingleQuote(auth.config.path)}`;
+          console.log(`  config: ${auth.config.path}`);
+          console.log(`  token: ${auth.config.token_fingerprint ?? "unknown fingerprint"} (not printed)`);
+          if (boundChannel) console.log(`  channel: ${boundChannel}`);
+          console.log(`  verify: ${prefix} party whoami --rejoin`);
+          if (boundChannel) console.log(`  wait:   ${prefix} party watch ${boundChannel} --mentions-only --once`);
+        } else {
+          console.log("  no agent config file is active; this identity comes from the account session");
+          console.log("  for a durable agent identity, mint an agent token and run party init with AGENTPARTY_CONFIG");
+        }
+        console.log("  if this config file is lost, mint a new agent token and revoke/remove the old identity");
+      }
       // --caps：把 token 能干什么摊开，免得撞 403 才知道没权限（scoped token 尤其容易懵）
       if (flags.caps) {
         const scope = me.channel_scope ?? null;

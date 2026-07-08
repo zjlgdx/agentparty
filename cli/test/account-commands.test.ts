@@ -299,6 +299,21 @@ describe("whoami", () => {
     expect(logs.join("\n")).toContain("can: send=yes create-channel=yes mint-agents=yes");
   });
 
+  test("prints safe rejoin instructions without exposing the token", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_rejoin_secret" });
+    writeState({ channel: "dev", cursor: 0 });
+    const code = await whoamiRun(["--rejoin"]);
+    expect(code).toBe(0);
+    const stdout = logs.join("\n");
+    expect(stdout).toContain("rejoin:");
+    expect(stdout).toContain("channel: dev");
+    expect(stdout).toContain(`token: ${tokenFingerprint("ap_rejoin_secret")}`);
+    expect(stdout).toContain("AGENTPARTY_CONFIG=");
+    expect(stdout).toContain("party watch dev --mentions-only --once");
+    expect(stdout).not.toContain("ap_rejoin_secret");
+  });
+
   test("prints not logged in when no auth", async () => {
     const code = await whoamiRun([]);
     expect(code).toBe(0);
