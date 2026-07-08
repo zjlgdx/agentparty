@@ -353,6 +353,16 @@ export async function revokeJoinLink(token: string, slug: string, code: string):
   if (!res.ok && res.status !== 404) throw new Error(`DELETE join-link failed (${res.status})`);
 }
 
+export async function archiveChannel(token: string, slug: string): Promise<void> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/archive`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("only the channel owner can archive");
+  if (!res.ok) throw new Error(`POST /api/channels/${slug}/archive failed (${res.status})`);
+}
+
 export async function kickParticipant(token: string, slug: string, name: string, mode: "disconnect" | "remove" = "disconnect"): Promise<void> {
   const body = mode === "remove" ? { name, mode } : { name };
   const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/kick`, {

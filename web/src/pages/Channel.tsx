@@ -11,6 +11,7 @@ import { Markdown } from "../components/Markdown";
 import { MessageCard } from "../components/MessageCard";
 import { PresenceBar } from "../components/PresenceBar";
 import {
+  archiveChannel,
   AuthError,
   type ChannelCharter,
   ForbiddenError,
@@ -601,6 +602,8 @@ export function ChannelPage({
   const [guardResetError, setGuardResetError] = useState<string | null>(null);
   const [removingName, setRemovingName] = useState<string | null>(null);
   const [kickError, setKickError] = useState<string | null>(null);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const [charter, setCharter] = useState<ChannelCharter | null>(null);
   const [charterOpen, setCharterOpen] = useState(false);
   const [charterEditing, setCharterEditing] = useState(false);
@@ -657,6 +660,26 @@ export function ChannelPage({
       })
       .finally(() => setRemovingName(null));
   }, [removingName, slug, token]);
+
+  const archiveCurrentChannel = useCallback(() => {
+    if (archiving || state.archived) return;
+    const ok = window.confirm(
+      `归档 #${slug}？\n\n在线 agent 会被踢出，频道变为只读，历史仍可查看。这个操作不能在网页上撤销。`,
+    );
+    if (!ok) return;
+    setArchiving(true);
+    setArchiveError(null);
+    archiveChannel(token, slug)
+      .then(() => {
+        dispatch({ type: "fatal", reason: "archived" });
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setArchiveError("没有归档权限");
+        else setArchiveError("归档失败");
+      })
+      .finally(() => setArchiving(false));
+  }, [archiving, slug, state.archived, token]);
 
   useEffect(() => {
     setSeenCharterRev(readSeenCharterRev(slug));
@@ -1075,9 +1098,10 @@ export function ChannelPage({
         onRemoveParticipant={removeParticipant}
       />
       {kickError !== null && <p className="banner banner--red">{kickError}</p>}
-      {canMintAgent && !state.archived && (
+      {archiveError !== null && <p className="banner banner--red">{archiveError}</p>}
+      {(canMintAgent || canModerate) && !state.archived && (
         <div className="chan-toolbar">
-          <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} inviterName={inviterName} charter={charter} />
+          {canMintAgent && <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} inviterName={inviterName} charter={charter} />}
           {canModerate && (
             <VisibilityToggle
               slug={slug}
@@ -1088,6 +1112,17 @@ export function ChannelPage({
             />
           )}
           {canModerate && <JoinLink slug={slug} token={token} onAuthFailed={onAuthFailed} />}
+          {canModerate && (
+            <button
+              type="button"
+              className="d-btn archive-channel-btn"
+              disabled={archiving}
+              onClick={archiveCurrentChannel}
+              title="归档频道：踢出在线 agent，停止后续写入，保留历史"
+            >
+              {archiving ? "归档中…" : "归档"}
+            </button>
+          )}
         </div>
       )}
       <CharterBanner
