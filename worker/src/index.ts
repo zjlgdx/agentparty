@@ -91,6 +91,7 @@ const AP_FORWARD_HEADERS = [
   "x-ap-archive-at",
   "x-ap-collab-role",
   "x-ap-role-source",
+  "x-ap-handle",
 ] as const;
 // 所属人标签：铸造时可选写入，须 header-safe（可打印 ASCII，含空格）以便经 x-ap-owner 转发给 do
 const OWNER_MAX = 128;
@@ -396,6 +397,15 @@ async function loadAssignedRole(db: D1Database, slug: string, name: string): Pro
 
 function assignedRoleHeaders(role: CollaborationRole | null): Record<string, string> {
   return role === null ? {} : { "x-ap-collab-role": role, "x-ap-role-source": "assigned" };
+}
+
+// 人类 handle 头：account 非空且已设 handle 才带（权威值，供 do 盖 presence + stamp 消息，Task A6）。
+// export 仅供 test 直接单测（do 尚不消费这个头，spec 里现有的"观察 do 副作用"手法在这没有可观察点）。
+export async function handleHeader(db: D1Database, account: string | null | undefined): Promise<Record<string, string>> {
+  if (account == null) return {};
+  const row = await db.prepare("SELECT handle FROM account_profiles WHERE account = ?")
+    .bind(account).first<{ handle: string }>();
+  return row?.handle ? { "x-ap-handle": row.handle } : {};
 }
 
 function lineageHeaders(identity: TokenIdentity): Record<string, string> {
@@ -1785,6 +1795,7 @@ app.post("/api/channels/:slug/messages", async (c) => {
         ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
+        ...(await handleHeader(c.env.DB, identity.account)),
       },
     }),
   );
@@ -2061,6 +2072,7 @@ app.get("/api/channels/:slug/ws", async (c) => {
   fwd.headers.set("x-ap-host", new URL(c.req.url).host);
   // 无条件写：未归档也显式置 "0"，堵住"客户端注入 1、未归档分支不覆盖"的透传
   fwd.headers.set("x-ap-archived", channel.archived_at !== null ? "1" : "0");
+  for (const [key, value] of Object.entries(await handleHeader(c.env.DB, identity.account))) fwd.headers.set(key, value);
   const upgrade = await stub.fetch(fwd);
   const requestedProtocols = c.req
     .header("sec-websocket-protocol")
