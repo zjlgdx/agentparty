@@ -17,7 +17,6 @@ import type {
 } from "@agentparty/shared";
 import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
-import { getServerByName } from "partyserver";
 import { canAccessChannel, isChannelModerator } from "./acl";
 import {
   extractBearer,
@@ -50,6 +49,34 @@ const VISIBILITIES: readonly string[] = ["public", "private"];
 const COMPLETION_GATES: readonly string[] = ["off", "reviewer"] satisfies CompletionGate[];
 const COMPLETION_REVIEW_POLICIES: readonly string[] = ["sender", "owner"] satisfies CompletionReviewPolicy[];
 const COLLAB_ROLES: readonly string[] = ["host", "worker", "reviewer", "observer"] satisfies CollaborationRole[];
+
+function isDurableObjectReset(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as { durableObjectReset?: unknown; message?: unknown; stack?: unknown };
+  if (record.durableObjectReset === true) return true;
+  const text = `${typeof record.message === "string" ? record.message : ""}\n${typeof record.stack === "string" ? record.stack : ""}`;
+  return text.includes("invalidating this Durable Object") && text.includes("Please retry");
+}
+
+function channelStub(env: AppEnv, slug: string): DurableObjectStub<ChannelDO> {
+  return env.CHANNELS.get(env.CHANNELS.idFromName(slug));
+}
+
+async function fetchChannelDO(env: AppEnv, slug: string, request: Request | (() => Request), retries = 1): Promise<Response> {
+  const stub = channelStub(env, slug);
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const req = typeof request === "function" ? request() : request.clone();
+    try {
+      return await stub.fetch(req);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isDurableObjectReset(error)) throw error;
+      await Promise.resolve();
+    }
+  }
+  throw lastError;
+}
 
 function parseRoleResponsibility(body: Record<string, unknown> | null): { present: boolean; value: string | null } | null {
   if (body === null || !Object.prototype.hasOwnProperty.call(body, "responsibility")) {
@@ -536,8 +563,9 @@ async function canAccessLoadedChannel(db: D1Database, identity: TokenIdentity, c
 }
 
 async function channelMessageStats(env: AppEnv, slug: string): Promise<{ message_count: number; earliest_ts: number | null }> {
-  const stub = await getServerByName(env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    env,
+    slug,
     new Request("https://do/internal/message-stats", { headers: { "x-partykit-room": slug } }),
   );
   if (!res.ok) return { message_count: 0, earliest_ts: null };
@@ -545,8 +573,9 @@ async function channelMessageStats(env: AppEnv, slug: string): Promise<{ message
 }
 
 async function insertSystemStatus(env: AppEnv, slug: string, note: string, ts = Date.now()): Promise<boolean> {
-  const stub = await getServerByName(env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    env,
+    slug,
     new Request("https://do/internal/system-status", {
       method: "POST",
       body: JSON.stringify({ note, ts }),
@@ -557,8 +586,9 @@ async function insertSystemStatus(env: AppEnv, slug: string, note: string, ts = 
 }
 
 async function recentNonMemberSpeakers(db: D1Database, env: AppEnv, slug: string, ownerAccount: string | null): Promise<string[]> {
-  const stub = await getServerByName(env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    env,
+    slug,
     new Request("https://do/internal/messages?since=0&limit=1000", { headers: { "x-partykit-room": slug } }),
   );
   if (!res.ok) return [];
@@ -1114,8 +1144,9 @@ app.post("/api/channels/:slug/project-agents/runtime-token", requireBearer, asyn
     return c.json(errorBody("conflict", "child agent name conflicts with an existing identity"), 409);
   }
   try {
-    const stub = await getServerByName(c.env.CHANNELS, slug);
-    await stub.fetch(
+    await fetchChannelDO(
+      c.env,
+      slug,
       new Request("https://do/internal/kick", {
         method: "POST",
         body: JSON.stringify({ name: childName }),
@@ -1202,15 +1233,15 @@ app.post("/api/channels/:slug/agents/:name/rotate", requireBearer, async (c) => 
   )
     .bind(await sha256Hex(nextToken), now, row.id)
     .run();
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const kicked = await stub
-    .fetch(
-      new Request("https://do/internal/kick", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-        headers: { "content-type": "application/json", "x-partykit-room": slug },
-      }),
-    )
+  const kicked = await fetchChannelDO(
+    c.env,
+    slug,
+    new Request("https://do/internal/kick", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      headers: { "content-type": "application/json", "x-partykit-room": slug },
+    }),
+  )
     .then((res) => res.ok)
     .catch(() => false);
   return c.json({ token: nextToken, name, role: "agent", owner: identity.account, channel_scope: slug, created_at: now, kicked });
@@ -1311,8 +1342,9 @@ app.delete("/api/tokens/:name", requireAdmin, async (c) => {
   await Promise.all(
     results.map(async ({ slug }) => {
       try {
-        const stub = await getServerByName(c.env.CHANNELS, slug);
-        await stub.fetch(
+        await fetchChannelDO(
+          c.env,
+          slug,
           new Request("https://do/internal/kick", {
             method: "POST",
             body: JSON.stringify({ name }),
@@ -1376,8 +1408,9 @@ app.get("/api/channels", async (c) => {
       const { created_by, owner_account, ...row } = full;
       let summary: ChannelSummary = { last: null, presence: [] };
       try {
-        const stub = await getServerByName(c.env.CHANNELS, row.slug);
-        const res = await stub.fetch(
+        const res = await fetchChannelDO(
+          c.env,
+          row.slug,
           new Request("https://do/internal/summary", { headers: { "x-partykit-room": row.slug } }),
         );
         if (res.ok) summary = (await res.json()) as ChannelSummary;
@@ -1434,8 +1467,9 @@ app.post("/api/channels", async (c) => {
   }
   if (kind === "temp") {
     try {
-      const stub = await getServerByName(c.env.CHANNELS, slug);
-      await stub.fetch(
+      await fetchChannelDO(
+        c.env,
+        slug,
         new Request("https://do/internal/init", {
           method: "POST",
           headers: {
@@ -1586,10 +1620,11 @@ app.delete("/api/channels/:slug/project-agents", async (c) => {
     .bind(revokedAt, ownerAccount, slug, handle)
     .run();
   try {
-    const stub = await getServerByName(c.env.CHANNELS, slug);
     await Promise.all(
       [handle, ...(childRows.results ?? []).map((row) => row.name)].map((name) =>
-        stub.fetch(
+        fetchChannelDO(
+          c.env,
+          slug,
           new Request("https://do/internal/kick", {
             method: "POST",
             body: JSON.stringify({ name }),
@@ -1903,8 +1938,9 @@ app.put("/api/channels/:slug/charter", async (c) => {
   }
   const updated = await loadChannel(c.env.DB, slug);
   const rev = updated?.charter_rev ?? channel.charter_rev + 1;
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/charter-rev", {
       method: "POST",
       body: JSON.stringify({ rev, updated_by: updatedBy, ts: now }),
@@ -1928,9 +1964,10 @@ app.get("/api/channels/:slug/messages", async (c) => {
   if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const search = new URL(c.req.url).search;
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/messages${search}`, {
       headers: { "x-partykit-room": slug },
     }),
@@ -1945,8 +1982,7 @@ app.get("/api/channels/:slug/presence", async (c) => {
   if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(new Request("https://do/internal/presence", { headers: { "x-partykit-room": slug } }));
+  return fetchChannelDO(c.env, slug, new Request("https://do/internal/presence", { headers: { "x-partykit-room": slug } }));
 });
 
 app.get("/api/channels/:slug/identities", async (c) => {
@@ -1973,8 +2009,7 @@ app.get("/api/channels/:slug/identities", async (c) => {
     add({ name: channel.created_by, kind: "human", account: channel.owner_account });
   }
 
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const res = await stub.fetch(new Request("https://do/internal/identities", { headers: { "x-partykit-room": slug } }));
+  const res = await fetchChannelDO(c.env, slug, new Request("https://do/internal/identities", { headers: { "x-partykit-room": slug } }));
   if (res.ok) {
     const data = (await res.json()) as { identities?: { name: string; kind?: "agent" | "human"; account?: string }[] };
     for (const identity of data.identities ?? []) {
@@ -1996,9 +2031,10 @@ app.get("/api/channels/:slug/search", async (c) => {
   if (q === null || q.trim() === "") {
     return c.json(errorBody("bad_request", "q required"), 400);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const search = new URL(c.req.url).search;
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/search${search}`, {
       headers: { "x-partykit-room": slug },
     }),
@@ -2012,9 +2048,10 @@ app.get("/api/channels/:slug/wake-deliveries", async (c) => {
   if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const search = new URL(c.req.url).search;
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/wake-deliveries${search}`, {
       headers: { "x-partykit-room": slug },
     }),
@@ -2028,8 +2065,9 @@ app.get("/api/channels/:slug/read-cursors", async (c) => {
   if (!(await canAccessLoadedChannel(c.env.DB, c.get("identity"), channel))) {
     return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/read-cursors", {
       headers: { "x-partykit-room": slug },
     }),
@@ -2091,8 +2129,9 @@ app.post("/api/channels/:slug/captures", async (c) => {
     return c.json(errorBody("bad_request", `note must be a string <= ${CAPTURE_NOTE_MAX} chars`), 400);
   }
 
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const msgRes = await stub.fetch(
+  const msgRes = await fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/messages?since=${seq - 1}&limit=1`, {
       headers: { "x-partykit-room": slug },
     }),
@@ -2195,8 +2234,9 @@ app.put("/api/channels/:slug/roles/:name", async (c) => {
   )
     .bind(slug, name, role, identity.name, assignedAt, responsibility.value)
     .run();
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  await stub.fetch(
+  await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/roles", {
       method: "POST",
       body: JSON.stringify({ name, role }),
@@ -2222,8 +2262,9 @@ app.delete("/api/channels/:slug/roles/:name", async (c) => {
   await c.env.DB.prepare("DELETE FROM channel_roles WHERE channel_slug = ? AND agent_name = ?")
     .bind(slug, name)
     .run();
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  await stub.fetch(
+  await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/roles", {
       method: "POST",
       body: JSON.stringify({ name, role: null }),
@@ -2264,8 +2305,9 @@ app.put("/api/channels/:slug/completion-gate", async (c) => {
     .bind(gate, policy, slug)
     .run();
   const updated = { ...channel, completion_gate: gate, completion_review_policy: policy };
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  await stub.fetch(
+  await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/init", {
       method: "POST",
       headers: { "x-partykit-room": slug, ...channelHeaders(updated, c.req.url) },
@@ -2298,8 +2340,9 @@ app.put("/api/channels/:slug/workflow-guard", async (c) => {
     .bind(enabled, limit, slug)
     .run();
   const updated = { ...channel, workflow_guard_enabled: enabled, workflow_guard_limit: limit };
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  await stub.fetch(
+  await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/init", {
       method: "POST",
       headers: { "x-partykit-room": slug, ...channelHeaders(updated, c.req.url) },
@@ -2321,9 +2364,10 @@ app.post("/api/channels/:slug/messages/:seq/review", async (c) => {
   }
   const seq = positiveInt(Number(c.req.param("seq")));
   if (seq === null) return c.json(errorBody("bad_request", "seq must be a positive integer"), 400);
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const assignedRole = await loadAssignedRole(c.env.DB, slug, identity.name);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/messages/${seq}/review`, {
       method: "POST",
       body: await c.req.text(),
@@ -2361,9 +2405,10 @@ app.post("/api/channels/:slug/messages/:seq/:action", async (c) => {
   if (action !== "edit" && action !== "retract" && action !== "supersede") {
     return c.json(errorBody("bad_request", "action must be edit|retract|supersede"), 400);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const assignedRole = await loadAssignedRole(c.env.DB, slug, identity.name);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/messages/${seq}/${action}`, {
       method: "POST",
       body: action === "retract" ? null : await c.req.text(),
@@ -2394,8 +2439,9 @@ app.get("/api/channels/:slug/messages/:seq/audit", async (c) => {
   }
   const seq = positiveInt(Number(c.req.param("seq")));
   if (seq === null) return c.json(errorBody("bad_request", "seq must be a positive integer"), 400);
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/messages/${seq}/audit`, {
       headers: { "x-partykit-room": slug },
     }),
@@ -2414,9 +2460,10 @@ app.post("/api/channels/:slug/messages", async (c) => {
   if (channel.archived_at !== null) {
     return c.json(errorBody("archived", "channel is archived"), 410);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const assignedRole = await loadAssignedRole(c.env.DB, slug, identity.name);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/messages", {
       method: "POST",
       body: await c.req.text(),
@@ -2482,8 +2529,9 @@ app.post("/api/channels/:slug/webhooks", async (c) => {
       400,
     );
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/webhooks", {
       method: "POST",
       body: JSON.stringify({ name, url, secret, filter }),
@@ -2504,8 +2552,9 @@ app.get("/api/channels/:slug/webhooks", async (c) => {
   if (channel.archived_at !== null) {
     return c.json(errorBody("archived", "channel is archived"), 410);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/webhooks", { headers: { "x-partykit-room": slug } }),
   );
 });
@@ -2522,8 +2571,9 @@ app.delete("/api/channels/:slug/webhooks/:name", async (c) => {
   if (channel.archived_at !== null) {
     return c.json(errorBody("archived", "channel is archived"), 410);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/webhooks?name=${encodeURIComponent(c.req.param("name"))}`, {
       method: "DELETE",
       headers: { "x-partykit-room": slug },
@@ -2539,9 +2589,10 @@ app.post("/api/channels/:slug/archive", async (c) => {
   if (!isChannelModerator(c.get("identity"), channel)) {
     return c.json(errorBody("forbidden", "only the channel owner or an ap_ token can archive"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   const archivedAt = Date.now();
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/archive", {
       method: "POST",
       headers: {
@@ -2586,8 +2637,9 @@ app.post("/api/channels/:slug/kick", async (c) => {
       .bind(now, slug, name)
       .run();
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/kick", {
       method: "POST",
       body: JSON.stringify(mode === "remove" ? { name, mode } : { name }),
@@ -2624,8 +2676,9 @@ app.post("/api/channels/:slug/reset-guard", async (c) => {
   if (!isChannelModerator(c.get("identity"), channel) || c.get("identity").kind !== "human") {
     return c.json(errorBody("forbidden", "only a human owner or human ap_ token can reset guard"), 403);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  return stub.fetch(
+  return fetchChannelDO(
+    c.env,
+    slug,
     new Request("https://do/internal/reset-guard", {
       method: "POST",
       headers: { "x-partykit-room": slug },
@@ -2645,8 +2698,9 @@ app.post("/api/channels/:slug/workflows/:workflow_id/reset-guard", async (c) => 
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(workflowId)) {
     return c.json(errorBody("bad_request", "valid workflow_id required"), 400);
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
-  const res = await stub.fetch(
+  const res = await fetchChannelDO(
+    c.env,
+    slug,
     new Request(`https://do/internal/workflows/${encodeURIComponent(workflowId)}/reset-guard`, {
       method: "POST",
       headers: { "x-partykit-room": slug },
@@ -2680,7 +2734,6 @@ app.get("/api/channels/:slug/ws", async (c) => {
     if (requested?.includes("agentparty")) headers.set("Sec-WebSocket-Protocol", "agentparty");
     return new Response(null, { status: 101, webSocket: pair[0], headers });
   }
-  const stub = await getServerByName(c.env.CHANNELS, slug);
   // new Request(c.req.raw) 会带上客户端所有头：升级请求里任何 x-ap-* 都是客户端注入的，
   // 先逐个剥离再写 worker 权威值，否则 readonly 能靠 x-ap-archived:1 提权归档活频道、
   // 靠 x-ap-host 污染 webhook permalink（do 无条件信任 x-ap-*）。
@@ -2709,7 +2762,7 @@ app.get("/api/channels/:slug/ws", async (c) => {
   // 无条件写：未归档也显式置 "0"，堵住"客户端注入 1、未归档分支不覆盖"的透传
   fwd.headers.set("x-ap-archived", channel.archived_at !== null ? "1" : "0");
   for (const [key, value] of Object.entries(await handleHeader(c.env.DB, identity))) fwd.headers.set(key, value);
-  const upgrade = await stub.fetch(fwd);
+  const upgrade = await channelStub(c.env, slug).fetch(fwd);
   const requestedProtocols = c.req
     .header("sec-websocket-protocol")
     ?.split(",")
