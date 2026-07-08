@@ -274,6 +274,7 @@ function CharterBanner({
                             className="role-input"
                             value={draftForRole.responsibility}
                             onChange={(e) => onRoleDraft(role.name, { ...draftForRole, responsibility: e.target.value })}
+                            autoComplete="off"
                             placeholder={t("Channel.roles.responsibilityPlaceholder")}
                           />
                           <button className="d-btn" type="button" disabled={roleSaving === role.name} onClick={() => onSaveRole(role.name, draftForRole)}>
@@ -303,6 +304,8 @@ function CharterBanner({
                   value={roleName}
                   onChange={(e) => onNewRoleName(e.target.value)}
                   list="channel-role-targets"
+                  autoComplete="off"
+                  spellCheck={false}
                   placeholder={t("Channel.roles.namePlaceholder")}
                 />
                 <select
@@ -318,6 +321,7 @@ function CharterBanner({
                   className="role-input"
                   value={roleDraft.responsibility}
                   onChange={(e) => onNewRoleDraft({ ...roleDraft, responsibility: e.target.value })}
+                  autoComplete="off"
                   placeholder={t("Channel.roles.responsibilityPlaceholder")}
                 />
                 <button className="d-btn d-btn--primary" type="button" disabled={roleSaving === "__new__"} onClick={() => onSaveRole(roleName, roleDraft)}>
