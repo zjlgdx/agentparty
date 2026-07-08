@@ -1,18 +1,34 @@
 // 消息渲染：message → doodle 卡片外壳 + mono 元信息 + markdown 正文；
 // status → 时间线分隔条（spec §9 第 2 块）。
-import type { AgentContext, MsgFrame } from "@agentparty/shared";
+import type { AgentContext, MsgFrame, ReadCursor, Sender } from "@agentparty/shared";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
 import type { IdentityDisplayMap } from "../lib/identityDisplay";
 import { replaceMentionLabels } from "../lib/mentionMarkup";
+import { readStateFor } from "../lib/readList";
 import { fmtTime } from "../lib/time";
+import type { MentionReceipt, ReceiptState } from "../lib/wakeReceipt";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/WakeReceipt";
 import { Markdown } from "./Markdown";
 
 interface Props {
   msg: MsgFrame;
   self: string | null;
   identityDisplay?: IdentityDisplayMap;
+  receipts?: MentionReceipt[]; // 本条被 @ 的 agent 目标的唤醒/回执状态（Phase 1）
+  readCursors?: Record<string, ReadCursor>; // 已读游标（Phase 2）
+  participants?: Sender[]; // 当前连着的身份，用于算未读
 }
+
+const RECEIPT_ICON: Record<ReceiptState, string> = {
+  replied: "✓",
+  woke: "✓",
+  wake_failed: "⚠",
+  delivered: "●",
+  pending_wake: "◐",
+  pending_reconnect: "⏳",
+};
 
 function displayForIdentity(name: string, identities: IdentityDisplayMap | undefined): string {
   return identities?.[name]?.display ?? name;
@@ -61,9 +77,23 @@ function reviewTitle(msg: MsgFrame): string {
   ].filter((part): part is string => part !== null).join("\n");
 }
 
-export function MessageCard({ msg, self, identityDisplay }: Props) {
+export function MessageCard({ msg, self, identityDisplay, receipts, readCursors, participants }: Props) {
+  const t = useT();
   // 每个 agent 一个确定性色相：CSS 用 --ah 套 hsl() 给头像点/名字/卡片左条上色
   const hueStyle = { "--ah": agentHue(msg.sender.name) } as CSSProperties;
+  // 已读/未读名单（Phase 2）：只在有游标数据时算；status 分隔条不显示。
+  const read =
+    msg.kind === "message" && readCursors !== undefined
+      ? readStateFor(msg.seq, msg.sender.name, participants ?? [], readCursors)
+      : { readers: [], unread: [] };
+  const readNames = (list: { name: string }[]): string =>
+    list.map((e) => displayForIdentity(e.name, identityDisplay)).join(", ");
+  const receiptText = (r: MentionReceipt): string => {
+    const base = t(`WakeReceipt.state.${r.state}`, { detail: r.detail ?? "" });
+    return r.state === "woke" && r.at !== null ? `${base} ${fmtTime(r.at)}` : base;
+  };
+  const receiptTitle = (r: MentionReceipt): string =>
+    t(`WakeReceipt.title.${r.state}`, { name: displayForIdentity(r.name, identityDisplay), detail: r.detail ?? "" });
   const senderLabel =
     msg.sender.kind === "human" && msg.sender.owner ? msg.sender.owner : displayForIdentity(msg.sender.name, identityDisplay);
   const owner = msg.sender.owner && msg.sender.owner !== senderLabel ? msg.sender.owner : null;
@@ -197,6 +227,31 @@ export function MessageCard({ msg, self, identityDisplay }: Props) {
         <span>#{msg.seq}</span>
         <time>{fmtTime(msg.ts)}</time>
       </header>
+      {receipts !== undefined && receipts.length > 0 && (
+        <ul className="msg-receipts" aria-label="mention delivery">
+          {receipts.map((r) => (
+            <li key={r.name} className={`msg-receipt msg-receipt--${r.state}`} title={receiptTitle(r)}>
+              <span className="msg-receipt-icon" aria-hidden="true">{RECEIPT_ICON[r.state]}</span>
+              <span className="msg-receipt-name t-mono">@{displayForIdentity(r.name, identityDisplay)}</span>
+              <span className="msg-receipt-label">{receiptText(r)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(read.readers.length > 0 || read.unread.length > 0) && (
+        <div className="msg-read" aria-label="read receipts">
+          {read.readers.length > 0 && (
+            <span className="msg-read-count msg-read-count--read" title={t("WakeReceipt.read.readTitle", { names: readNames(read.readers) })}>
+              ✓ {t("WakeReceipt.read.read", { n: read.readers.length })}
+            </span>
+          )}
+          {read.unread.length > 0 && (
+            <span className="msg-read-count msg-read-count--unread" title={t("WakeReceipt.read.unreadTitle", { names: readNames(read.unread) })}>
+              {t("WakeReceipt.read.unread", { n: read.unread.length })}
+            </span>
+          )}
+        </div>
+      )}
       {artifact !== undefined && (
         <div className="msg-completion" aria-label="completion artifact">
           {artifactBits.join(" · ")}

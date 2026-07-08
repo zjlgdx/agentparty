@@ -1,7 +1,7 @@
 // rest 封装 + token 存取。
 // 规则（spec §10 / M2 契约）：URL 带 ?t= 时优先用它，并立即从地址栏移除；
 // share token 只放 sessionStorage，本次标签页可刷新，避免长期落 localStorage。
-import type { ChannelRoleAssignment, CollaborationRole, MsgFrame, PresenceEntry, SearchHit } from "@agentparty/shared";
+import type { ChannelRoleAssignment, CollaborationRole, MsgFrame, PresenceEntry, SearchHit, WakeDelivery } from "@agentparty/shared";
 import type { WebSession } from "./oidc";
 
 const TOKEN_KEY = "ap_token";
@@ -317,6 +317,28 @@ export async function fetchMessages(
   if (!res.ok) throw new Error(`GET /api/channels/${slug}/messages failed (${res.status})`);
   const data = (await res.json()) as { messages: MsgFrame[] };
   return data.messages;
+}
+
+// @ 唤醒回执：webhook 唤醒台账(spec wake-deliveries)。since=最老可见 seq 限定窗口，返回该窗口内
+// 每条 @ 的唤醒尝试(ok/failed/http/error) + 复活链接。serve/watch 型 agent 不产生台账行(它们是连着的
+// 客户端，不靠服务端 POST)，那部分回执由 presence + 回复链接在前端补齐。
+export async function fetchWakeDeliveries(
+  token: string,
+  slug: string,
+  opts: { since?: number; limit?: number } = {},
+): Promise<WakeDelivery[]> {
+  const params = new URLSearchParams({
+    since: String(opts.since ?? 0),
+    limit: String(opts.limit ?? 100),
+  });
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/wake-deliveries?${params.toString()}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (!res.ok) throw new Error(`GET /api/channels/${slug}/wake-deliveries failed (${res.status})`);
+  const data = (await res.json()) as { deliveries: WakeDelivery[] };
+  return data.deliveries;
 }
 
 export async function fetchChannelCharter(token: string, slug: string): Promise<ChannelCharter> {

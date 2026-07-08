@@ -1,0 +1,53 @@
+import { registerDict, type LocaleDict } from "../dict";
+
+// 发送前(Composer 草稿里每个 @ 目标)+ 发送后(消息上的 @ 回执)共用的存活/回执文案。
+export const WakeReceiptStrings: LocaleDict = {
+  en: {
+    // 发送前预览：@ 目标当前能不能落地
+    "WakeReceipt.pre.online": "online · will see it live",
+    "WakeReceipt.pre.wakeable": "wakeable ({kind}) · @ will wake it",
+    "WakeReceipt.pre.offline": "offline · not wakeable — won't reach until it reconnects",
+    "WakeReceipt.pre.label": "reach",
+    // 发送后回执
+    "WakeReceipt.state.replied": "replied {detail}",
+    "WakeReceipt.state.woke": "woke",
+    "WakeReceipt.state.wake_failed": "wake failed",
+    "WakeReceipt.state.delivered": "online · delivered",
+    "WakeReceipt.state.pending_wake": "pending wake",
+    "WakeReceipt.state.pending_reconnect": "offline · pending reconnect",
+    "WakeReceipt.title.replied": "{name} replied (linked to this message)",
+    "WakeReceipt.title.woke": "{name}: wake fired {detail}",
+    "WakeReceipt.title.wake_failed": "{name}: wake delivery failed — {detail}",
+    "WakeReceipt.title.delivered": "{name} is connected now — receiving live, hasn't replied yet",
+    "WakeReceipt.title.pending_wake": "{name} declared wakeable ({detail}) — the @ should wake it; no reply yet",
+    "WakeReceipt.title.pending_reconnect": "{name} is offline and not wakeable — this @ won't be delivered until it reconnects",
+    "WakeReceipt.read.read": "{n} read",
+    "WakeReceipt.read.unread": "{n} unread",
+    "WakeReceipt.read.readTitle": "Read by: {names}",
+    "WakeReceipt.read.unreadTitle": "Not yet read (connected): {names}",
+  },
+  zh: {
+    "WakeReceipt.pre.online": "在线 · 会实时看到",
+    "WakeReceipt.pre.wakeable": "可唤醒({kind}) · @ 会拉起",
+    "WakeReceipt.pre.offline": "离线·不可唤醒 · 重连前收不到",
+    "WakeReceipt.pre.label": "能否送达",
+    "WakeReceipt.state.replied": "已回复 {detail}",
+    "WakeReceipt.state.woke": "已唤醒",
+    "WakeReceipt.state.wake_failed": "唤醒失败",
+    "WakeReceipt.state.delivered": "在线·已送达",
+    "WakeReceipt.state.pending_wake": "待唤醒",
+    "WakeReceipt.state.pending_reconnect": "离线·待重连",
+    "WakeReceipt.title.replied": "{name} 已回复(链接到本条消息)",
+    "WakeReceipt.title.woke": "{name}：唤醒已触发 {detail}",
+    "WakeReceipt.title.wake_failed": "{name}：唤醒投递失败 —— {detail}",
+    "WakeReceipt.title.delivered": "{name} 此刻在线 —— 实时在收，只是还没回",
+    "WakeReceipt.title.pending_wake": "{name} 声明了可唤醒({detail}) —— @ 应会拉起它；暂无回复",
+    "WakeReceipt.title.pending_reconnect": "{name} 离线且不可唤醒 —— 这条 @ 要等它重连才会送达",
+    "WakeReceipt.read.read": "{n} 已读",
+    "WakeReceipt.read.unread": "{n} 未读",
+    "WakeReceipt.read.readTitle": "已读：{names}",
+    "WakeReceipt.read.unreadTitle": "还没读(在线)：{names}",
+  },
+};
+
+registerDict(WakeReceiptStrings);

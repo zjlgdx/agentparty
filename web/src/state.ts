@@ -1,6 +1,6 @@
 // 频道页状态：协议帧 → React 状态的唯一归约点。
 // 消息按 seq 去重排序；status 帧同时进时间线和 presence 快照；error 帧内联展示不做 toast。
-import type { ChannelMode, MsgFrame, PresenceEntry, Sender, ServerFrame } from "@agentparty/shared";
+import type { ChannelMode, MsgFrame, PresenceEntry, ReadCursor, Sender, ServerFrame } from "@agentparty/shared";
 import type { FatalReason, SocketStatus } from "./lib/ws";
 
 export interface ChannelState {
@@ -9,6 +9,7 @@ export interface ChannelState {
   mode: ChannelMode;
   presence: Record<string, PresenceEntry>;
   messages: MsgFrame[]; // 按 seq 升序、已去重
+  readCursors: Record<string, ReadCursor>; // 每身份读到第几条（Phase 2）；人类 + 流式 agent 同表
   status: SocketStatus;
   readonly: boolean; // welcome.role=readonly（或 send 被拒 unauthorized 兜底）→ 隐藏输入框
   archived: boolean; // 灰条 "channel archived"
@@ -25,6 +26,7 @@ export const initialChannelState: ChannelState = {
   mode: "normal",
   presence: {},
   messages: [],
+  readCursors: {},
   status: "connecting",
   readonly: false,
   archived: false,
@@ -115,16 +117,38 @@ function applyFrame(state: ChannelState, frame: ServerFrame): ChannelState {
     case "welcome": {
       const presence = { ...state.presence };
       for (const p of frame.presence) presence[p.name] = p;
+      const readCursors = { ...state.readCursors };
+      for (const c of frame.read_cursors ?? []) {
+        const prev = readCursors[c.name];
+        if (prev === undefined || c.last_seen_seq > prev.last_seen_seq) readCursors[c.name] = c;
+      }
       return {
         ...state,
         self: frame.self,
         mode: frame.mode ?? state.mode,
         participants: frame.participants,
         presence,
+        readCursors,
         // welcome 首帧即知角色，readonly 分享链接不闪现输入框（spec §9）
         readonly: frame.role === "readonly" ? true : state.readonly,
         loopGuard: frame.loop_guard ?? state.loopGuard,
         loopGuardBaselineSeq: frame.loop_guard != null ? frame.last_seq : state.loopGuardBaselineSeq,
+      };
+    }
+    case "read_cursor": {
+      const prev = state.readCursors[frame.name];
+      if (prev !== undefined && prev.last_seen_seq >= frame.last_seen_seq) return state;
+      return {
+        ...state,
+        readCursors: {
+          ...state.readCursors,
+          [frame.name]: {
+            name: frame.name,
+            kind: frame.kind,
+            last_seen_seq: frame.last_seen_seq,
+            updated_at: frame.updated_at,
+          },
+        },
       };
     }
     case "participants":

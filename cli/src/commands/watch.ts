@@ -105,6 +105,10 @@ export async function runWatch(o: WatchOptions): Promise<number> {
       const fresh = msg.seq > conn.cursor;
       // 打印（或有意跳过）之后才推进游标，退出时入队未消费的消息留给下次补拉
       if (msg.seq > 0) conn.ack(msg.seq);
+      // watch --follow 是流式在读整个频道：把已读游标回给服务端，agent 的已读状态因此成立（Phase 2）。
+      // 只在 follow 下发；--once / 非 follow 是「查有没有 @ 我再退」的事件驱动路径，不算逐条已读，
+      // 其送达/唤醒由 wake 回执表达（不假装 agent 逐条读了频道）。只对游标之上的新消息发。
+      if (o.follow && fresh && msg.seq > 0) conn.send({ type: "seen", seq: msg.seq });
       // --once：第一条匹配的【新】消息即完成——游标已推进，进程退出就是 harness 的唤醒信号
       if (o.once && qualifies && fresh) {
         onceDone = true;

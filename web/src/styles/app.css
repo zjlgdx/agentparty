@@ -2137,6 +2137,107 @@
 .mention-tier--recent {
   color: var(--t-muted, #8a8778);
 }
+/* 发送前状态条：草稿里每个 @ 目标当前能否落地（在线/可唤醒/离线不可唤醒）。整行浮在 input 上方。 */
+.composer {
+  flex-wrap: wrap;
+}
+.composer-reach {
+  order: -1;
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin: 0 0 3px;
+  padding: 2px 4px;
+  list-style: none;
+  font-size: 11.5px;
+}
+.composer-reach-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.composer-reach-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--t-muted, #8a8778);
+}
+.composer-reach-item--online .composer-reach-dot {
+  background: #2e7d46;
+}
+.composer-reach-item--wakeable .composer-reach-dot {
+  background: var(--t-accent, #b4552d);
+}
+.composer-reach-name {
+  color: var(--t-body);
+}
+.composer-reach-label {
+  color: var(--t-muted, #8a8778);
+}
+.composer-reach-item--offline .composer-reach-label {
+  color: #b3261e;
+}
+/* 发送后回执：消息卡上每个被 @ 的 agent 目标的唤醒/回执状态（已回复/已唤醒/唤醒失败/在线/待唤醒/待重连） */
+.msg-receipts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+}
+.msg-receipt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.msg-receipt-icon {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--t-muted, #8a8778);
+}
+.msg-receipt-name {
+  color: var(--t-body);
+  opacity: 0.8;
+}
+.msg-receipt-label {
+  color: var(--t-muted, #8a8778);
+}
+.msg-receipt--replied .msg-receipt-icon,
+.msg-receipt--woke .msg-receipt-icon,
+.msg-receipt--delivered .msg-receipt-icon,
+.msg-receipt--replied .msg-receipt-label,
+.msg-receipt--woke .msg-receipt-label,
+.msg-receipt--delivered .msg-receipt-label {
+  color: #2e7d46;
+}
+.msg-receipt--pending_wake .msg-receipt-icon,
+.msg-receipt--pending_wake .msg-receipt-label {
+  color: var(--t-accent, #b4552d);
+}
+.msg-receipt--wake_failed .msg-receipt-icon,
+.msg-receipt--wake_failed .msg-receipt-label {
+  color: #b3261e;
+}
+/* 已读/未读小标（Phase 2）：hover title 看名单 */
+.msg-read {
+  display: flex;
+  gap: 10px;
+  margin: 3px 0 0;
+  font-size: 11px;
+}
+.msg-read-count {
+  cursor: default;
+}
+.msg-read-count--read {
+  color: #2e7d46;
+}
+.msg-read-count--unread {
+  color: var(--t-muted, #8a8778);
+}
 .composer-input {
   flex: 1;
   resize: none;

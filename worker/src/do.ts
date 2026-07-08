@@ -30,6 +30,7 @@ import {
   type MessageUpdateFrame,
   type PresenceEntry,
   type PresenceFrame,
+  type ReadCursor,
   type Residency,
   type SendHostDecision,
   type SendFrame,
@@ -912,6 +913,14 @@ export class ChannelDO extends Server<Env> {
     sql.exec(
       "CREATE INDEX IF NOT EXISTS workflow_guard_state_no_progress_idx ON workflow_guard_state(no_progress, updated_at)",
     );
+    // 已读游标（Phase 2）：每身份读到的最大 seq。逐帧流式客户端（网页 / serve / watch --follow）回 seen
+    // 时前移，断连后保留。人类与流式 agent 同表——读状态与身份类型无关，只看它逐帧收没收。
+    sql.exec(`CREATE TABLE IF NOT EXISTS read_cursor (
+      name TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      last_seen_seq INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
     this.ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair('{"type":"ping"}', '{"type":"pong"}'),
     );
@@ -954,6 +963,7 @@ export class ChannelDO extends Server<Env> {
       last_rev_seq: this.lastRevSeq(),
       ...(this.charterRev() > 0 ? { charter_rev: this.charterRev() } : {}),
       presence: this.presenceList(),
+      read_cursors: this.readCursors(),
     });
     this.broadcastFrame({ type: "participants", participants: this.participants() });
     // 只前移不后移：即便已有远期 alarm（temp 归档 +14 天 / webhook 重试）也保证 60s presence 扫描
@@ -1026,6 +1036,15 @@ export class ChannelDO extends Server<Env> {
               )
               .toArray();
       for (const row of rows) this.sendFrame(connection, this.rowToFrame(row));
+      return;
+    }
+    if (frame.type === "seen") {
+      // 已读游标（Phase 2）：前移了才广播。人类与流式 agent 走同一条路径。
+      const seq = typeof frame.seq === "number" ? frame.seq : NaN;
+      if (Number.isFinite(seq)) {
+        const cursor = this.recordSeen(st.name, st.kind, seq);
+        if (cursor !== null) this.broadcastFrame({ type: "read_cursor", ...cursor });
+      }
       return;
     }
     if (frame.type === "send") {
@@ -2837,6 +2856,40 @@ export class ChannelDO extends Server<Env> {
   private lastSeq(): number {
     const row = this.ctx.storage.sql.exec("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one();
     return Number(row.last);
+  }
+
+  // 已读游标快照（welcome 首帧下发）。
+  private readCursors(): ReadCursor[] {
+    return this.ctx.storage.sql
+      .exec("SELECT name, kind, last_seen_seq, updated_at FROM read_cursor ORDER BY name")
+      .toArray()
+      .map((r) => ({
+        name: String(r.name),
+        kind: r.kind === "agent" ? "agent" : "human",
+        last_seen_seq: Number(r.last_seen_seq),
+        updated_at: Number(r.updated_at),
+      }));
+  }
+
+  // seen 帧：把某身份的已读游标前移到 seq（只前移；旧 seq 幂等忽略）。前移了返回新游标（供广播），
+  // 没前移返回 null（不广播，避免噪声）。seq 被夹到 [0, lastSeq]，防止未来 seq 污染。
+  private recordSeen(name: string, kind: SenderKind, seq: number): ReadCursor | null {
+    const capped = Math.min(Math.max(Math.floor(seq), 0), this.lastSeq());
+    if (capped <= 0) return null;
+    const prev = this.ctx.storage.sql
+      .exec("SELECT last_seen_seq FROM read_cursor WHERE name = ?", name)
+      .toArray();
+    if (prev.length > 0 && Number(prev[0]!.last_seen_seq) >= capped) return null;
+    const updatedAt = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO read_cursor (name, kind, last_seen_seq, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET kind = excluded.kind, last_seen_seq = excluded.last_seen_seq, updated_at = excluded.updated_at`,
+      name,
+      kind,
+      capped,
+      updatedAt,
+    );
+    return { name, kind, last_seen_seq: capped, updated_at: updatedAt };
   }
 
   // 修订游标（issue #33）：单调修订序号，编辑/撤回/超越各占一号；DO 单线程，MAX+1 足够

@@ -301,9 +301,30 @@ export interface PingFrame {
   type: "ping";
 }
 
-export type ClientFrame = HelloFrame | SendFrame | PingFrame;
+// 已读游标（Phase 2）：逐帧流式连接的客户端（网页 tab / CLI serve / watch --follow）在读到某条
+// 消息后回一个 seen，声明「我已读到 seq」。读状态覆盖人类 AND 流式 agent——只要它逐帧在收，就能声明已读。
+// webhook / watch --once 型事件驱动 agent 不逐条流式读，不发 seen，其送达状态改由 wake 回执表达。
+export interface SeenFrame {
+  type: "seen";
+  seq: number;
+}
+
+export type ClientFrame = HelloFrame | SendFrame | PingFrame | SeenFrame;
 
 // ---- 服务端 → 客户端帧 ----
+
+// 某身份的已读游标：读到的最大 seq + 时间。游标只前移不后移，断连后仍保留（像 IM 的已读位置）。
+export interface ReadCursor {
+  name: string;
+  kind?: SenderKind;
+  last_seen_seq: number;
+  updated_at: number;
+}
+
+// 游标推进时广播，客户端据此实时更新每条消息的已读/未读名单。
+export interface ReadCursorFrame extends ReadCursor {
+  type: "read_cursor";
+}
 
 export interface WelcomeFrame {
   type: "welcome";
@@ -321,6 +342,8 @@ export interface WelcomeFrame {
   /** 频道公告/用前必读的版本；客户端发现变化后按需 REST 拉全文。 */
   charter_rev?: number;
   presence: PresenceEntry[];
+  /** 已读游标快照（Phase 2）；晚到的客户端据此初始化每身份读到第几条。旧客户端忽略即可。 */
+  read_cursors?: ReadCursor[];
 }
 
 export interface ParticipantsFrame {
@@ -775,5 +798,6 @@ export type ServerFrame =
   | MessageUpdateFrame
   | SentFrame
   | PresenceFrame
+  | ReadCursorFrame
   | ErrorFrame
   | PongFrame;

@@ -141,6 +141,48 @@ export function activeMentionQuery(text: string, caret: number): { start: number
   return { start: i, query: text.slice(i + 1, caret) };
 }
 
+// 单个 @ 目标的存活判断（发送前预览 + 发送后回执共用）。tier 复用候选逻辑，额外带出
+// wake.kind（用于「可唤醒(serve)」这种注解）和 reachable（在线或可唤醒＝这条 @ 现在能落地）。
+export interface MentionLiveness {
+  tier: MentionTier;
+  wakeKind: WakeKind | null;
+  reachable: boolean;
+}
+
+// Composer 发送前状态条的一行：草稿里的某个 @ 目标 + 它当前的存活档位。
+export interface DraftMentionStatus {
+  name: string;
+  display: string;
+  tier: MentionTier;
+  wakeKind: WakeKind | null;
+}
+
+export function mentionLiveness(
+  name: string,
+  online: Set<string>,
+  presence: Record<string, PresenceEntry>,
+  now: number,
+): MentionLiveness {
+  const tier = tierFor(name, online, presence, now);
+  const wakeKind = presence[name]?.wake?.kind ?? null;
+  return { tier, wakeKind, reachable: tier === "online" || tier === "wakeable" };
+}
+
+// 从草稿正文里提取 @name（与服务端 BODY_MENTION_RE 一致：@ 前须行首/空白，不吃 email 里的 @）。
+// 去重、保序，供发送前状态条渲染。
+const DRAFT_MENTION_RE = /(^|[^a-zA-Z0-9._@-])@([a-zA-Z0-9][a-zA-Z0-9._-]*)/g;
+export function parseDraftMentions(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.matchAll(DRAFT_MENTION_RE)) {
+    const name = m[2]!;
+    if (name === "system" || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 export function filterCandidates(cands: MentionCandidate[], query: string, limit = 8): MentionCandidate[] {
   const q = query.toLowerCase();
   if (q === "") return cands.slice(0, limit);

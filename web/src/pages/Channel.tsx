@@ -2,7 +2,7 @@
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type SearchHit } from "@agentparty/shared";
+import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type ReadCursor, type SearchHit, type Sender, type WakeDelivery } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { AgentTokens } from "../components/AgentTokens";
 import { VisibilityToggle } from "../components/VisibilityToggle";
@@ -23,6 +23,7 @@ import {
   fetchChannelIdentities,
   fetchChannelRoles,
   fetchMessages,
+  fetchWakeDeliveries,
   kickParticipant,
   resetGuard,
   searchMessages,
@@ -32,7 +33,8 @@ import {
 } from "../lib/api";
 import { agentHue } from "../lib/agentColor";
 import { buildIdentityDisplay, type IdentityDisplayMap } from "../lib/identityDisplay";
-import { mentionCandidates } from "../lib/mentions";
+import { mentionCandidates, mentionLiveness, parseDraftMentions, type DraftMentionStatus } from "../lib/mentions";
+import { buildReceipts, type MentionReceipt } from "../lib/wakeReceipt";
 import { completionMessages } from "../lib/completions";
 import { catchupKey, summarizeCatchup, type CatchupDigest } from "../lib/digest";
 import {
@@ -692,10 +694,16 @@ function TeamThread({
   thread,
   self,
   identityDisplay,
+  receiptsBySeq,
+  readCursors,
+  participants,
 }: {
   thread: TeamMessageThread;
   self: string | null;
   identityDisplay: IdentityDisplayMap;
+  receiptsBySeq: Map<number, MentionReceipt[]>;
+  readCursors: Record<string, ReadCursor>;
+  participants: Sender[];
 }) {
   const parentLabel =
     thread.parentAgents.length === 1 ? `parent ${thread.parentAgents[0]}` : `${thread.parentAgents.length} parents`;
@@ -721,7 +729,7 @@ function TeamThread({
       </summary>
       <div className="team-thread-messages">
         {thread.messages.map((message) => (
-          <MessageCard key={message.seq} msg={message} self={self} identityDisplay={identityDisplay} />
+          <MessageCard key={message.seq} msg={message} self={self} identityDisplay={identityDisplay} receipts={receiptsBySeq.get(message.seq)} readCursors={readCursors} participants={participants} />
         ))}
       </div>
     </details>
@@ -761,6 +769,7 @@ export function ChannelPage({
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [charter, setCharter] = useState<ChannelCharter | null>(null);
   const [charterOpen, setCharterOpen] = useState(false);
+  const [wakeDeliveries, setWakeDeliveries] = useState<WakeDelivery[]>([]); // @ 唤醒台账（webhook 侧硬证据）
   const [charterEditing, setCharterEditing] = useState(false);
   const [charterDraft, setCharterDraft] = useState("");
   const [charterSaving, setCharterSaving] = useState(false);
@@ -982,9 +991,23 @@ export function ChannelPage({
   // 新消息贴底滚动；用户上翻回看时不打扰
   const lastSeq = state.messages.length > 0 ? state.messages[state.messages.length - 1]!.seq : 0;
   const seenKey = state.self === null ? null : catchupKey(slug, state.self);
+  // 已读游标（Phase 2）：贴底看到最新消息时回一个 seen，声明「我读到 lastSeq」。分享只读链接不上报
+  // （避免匿名 UUID 混进已读名单）。sentSeenRef 去重，发送失败（断线）不推进、下次贴底重试。
+  const sentSeenRef = useRef(0);
+  const lastSeqRef = useRef(lastSeq);
+  lastSeqRef.current = lastSeq;
+  const sendSeen = useCallback(
+    (seq: number) => {
+      if (shareMode || seq <= sentSeenRef.current) return;
+      const ok = sockRef.current?.send({ type: "seen", seq }) ?? false;
+      if (ok) sentSeenRef.current = seq;
+    },
+    [shareMode],
+  );
   useEffect(() => {
     const el = streamRef.current;
     if (el !== null && stickBottom.current) el.scrollTop = el.scrollHeight;
+    if (stickBottom.current) sendSeen(lastSeq);
     // 贴底时收窄消息窗口：DOM 不挂几千条；被丢弃的最老页上翻会重新拉回
     if (stickBottom.current && state.messages.length > MESSAGE_CAP + PAGE_SIZE) {
       dispatch({ type: "trim", keep: MESSAGE_CAP });
@@ -1052,8 +1075,9 @@ export function ChannelPage({
     const el = streamRef.current;
     if (el === null) return;
     stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (stickBottom.current) sendSeen(lastSeqRef.current); // 滚到底＝看到了最新，回执已读
     if (el.scrollTop < TOP_LOAD_PX) loadOlder();
-  }, [loadOlder]);
+  }, [loadOlder, sendSeen]);
 
   // 服务端 sent 确认后才清对应草稿；用户已输入的新内容不能被旧 ack 清掉。
   useEffect(() => {
@@ -1258,6 +1282,70 @@ export function ChannelPage({
       }),
     [channelIdentities, mentionOptions, state.messages, state.participants, state.presence],
   );
+  // 只给「确定是 agent」的 @ 目标算回执：kind 已知 agent 才纳入，未知/人类不标（避免把人误标成待唤醒）。
+  const isAgentMention = useMemo(() => {
+    const kind = new Map<string, "agent" | "human">();
+    for (const p of state.participants) kind.set(p.name, p.kind);
+    for (const [name, p] of Object.entries(state.presence)) if (!kind.has(name) && p.kind) kind.set(name, p.kind);
+    for (const m of state.messages) if (!kind.has(m.sender.name)) kind.set(m.sender.name, m.sender.kind);
+    return (name: string): boolean => kind.get(name) === "agent";
+  }, [state.participants, state.presence, state.messages]);
+  // 发送后回执：seq → 每个被 @ 的 agent 目标的状态（已回复/已唤醒/唤醒失败/在线已送达/待唤醒/待重连）。
+  const receiptsBySeq = useMemo(
+    () =>
+      buildReceipts(
+        state.messages,
+        wakeDeliveries,
+        new Set(state.participants.map((p) => p.name)),
+        state.presence,
+        teamNow,
+        isAgentMention,
+      ),
+    [state.messages, wakeDeliveries, state.participants, state.presence, teamNow, isAgentMention],
+  );
+  // 发送前状态条：草稿里已 @ 的、且在频道里认得的目标 + 当前存活档位。
+  const draftMentionStatuses = useMemo<DraftMentionStatus[]>(() => {
+    const online = new Set(state.participants.map((p) => p.name));
+    const known = new Set<string>([...online, ...Object.keys(state.presence)]);
+    return parseDraftMentions(draft)
+      .filter((name) => known.has(name) && name !== state.self)
+      .map((name) => {
+        const live = mentionLiveness(name, online, state.presence, teamNow);
+        return { name, display: identityDisplay[name]?.display ?? name, tier: live.tier, wakeKind: live.wakeKind };
+      });
+  }, [draft, state.participants, state.presence, state.self, teamNow, identityDisplay]);
+  // 轮询 @ 唤醒台账（仅 webhook 侧有行；serve/watch 靠 presence + 回复链接补齐）。用 ref 保持 7s 稳定
+  // 间隔，不因每条新消息重挂定时器；标签页隐藏或频道无 agent @ 时跳过，端点失败也不影响其余回执渲染。
+  const messagesRef = useRef(state.messages);
+  messagesRef.current = state.messages;
+  const isAgentMentionRef = useRef(isAgentMention);
+  isAgentMentionRef.current = isAgentMention;
+  useEffect(() => {
+    if (shareMode) return;
+    let alive = true;
+    const poll = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const msgs = messagesRef.current;
+      const hasAgentMention = msgs.some(
+        (m) => m.kind === "message" && !m.retracted && m.mentions.some(isAgentMentionRef.current),
+      );
+      if (!hasAgentMention) return;
+      const since = Math.max(0, (msgs[0]?.seq ?? 1) - 1);
+      fetchWakeDeliveries(token, slug, { since, limit: 100 })
+        .then((d) => {
+          if (alive) setWakeDeliveries(d);
+        })
+        .catch(() => {
+          /* 台账拉取失败不致命：回执仍能从 presence + 客户端回复链接渲染 */
+        });
+    };
+    poll();
+    const id = window.setInterval(poll, 7000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [token, slug, shareMode]);
   const agentFilterActive = agentFilter.agents.length > 0;
   const totalInView = q === "" ? timelineMessages.length : searchHits.length;
   const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
@@ -1528,13 +1616,16 @@ export function ChannelPage({
         {q === ""
           ? visibleTimeline.map((item) =>
               item.type === "message" ? (
-                <MessageCard key={item.message.seq} msg={item.message} self={state.self} identityDisplay={identityDisplay} />
+                <MessageCard key={item.message.seq} msg={item.message} self={state.self} identityDisplay={identityDisplay} receipts={receiptsBySeq.get(item.message.seq)} readCursors={state.readCursors} participants={state.participants} />
               ) : (
                 <TeamThread
                   key={item.key + `:${item.firstSeq}-${item.lastSeq}`}
                   thread={item}
                   self={state.self}
                   identityDisplay={identityDisplay}
+                  receiptsBySeq={receiptsBySeq}
+                  readCursors={state.readCursors}
+                  participants={state.participants}
                 />
               ),
             )
@@ -1615,6 +1706,7 @@ export function ChannelPage({
           onSend={send}
           ready={state.status === "open"}
           candidates={mentionOptions}
+          mentionStatuses={draftMentionStatuses}
         />
       )}
     </div>

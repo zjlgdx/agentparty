@@ -6,11 +6,13 @@ import { agentHue } from "../lib/agentColor";
 import {
   activeMentionQuery,
   filterCandidates,
+  type DraftMentionStatus,
   type MentionCandidate,
   type MentionTier,
 } from "../lib/mentions";
 import { useT } from "../i18n/useT";
 import "../i18n/strings/Composer";
+import "../i18n/strings/WakeReceipt";
 
 interface Props {
   draft: string;
@@ -18,17 +20,30 @@ interface Props {
   onSend(): void;
   ready: boolean; // ws open 才能发
   candidates: MentionCandidate[]; // @ 补全候选（participants ∪ presence，已分档排序）
+  mentionStatuses: DraftMentionStatus[]; // 草稿里已 @ 的目标 + 当前存活档位（发送前提醒会不会白发）
 }
 
 const TIER_DOT: Record<MentionTier, string> = { online: "●", wakeable: "◐", recent: "○" };
 const NAV_KEYS = new Set(["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"]);
+// 发送前状态条把「最近活跃(recent)」也归到「离线·不可唤醒」——发送时它既不在线也不会被唤醒。
+const REACH_TIER: Record<MentionTier, "online" | "wakeable" | "offline"> = {
+  online: "online",
+  wakeable: "wakeable",
+  recent: "offline",
+};
 
-export function Composer({ draft, setDraft, onSend, ready, candidates }: Props) {
+export function Composer({ draft, setDraft, onSend, ready, candidates, mentionStatuses }: Props) {
   const t = useT();
   const TIER_LABEL: Record<MentionTier, string> = {
     online: t("Composer.tier.online"),
     wakeable: t("Composer.tier.wakeable"),
     recent: t("Composer.tier.recent"),
+  };
+  const reachLabel = (s: DraftMentionStatus): string => {
+    const reach = REACH_TIER[s.tier];
+    if (reach === "online") return t("WakeReceipt.pre.online");
+    if (reach === "wakeable") return t("WakeReceipt.pre.wakeable", { kind: s.wakeKind ?? "wake" });
+    return t("WakeReceipt.pre.offline");
   };
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const [menu, setMenu] = useState<{ start: number; items: MentionCandidate[]; active: number } | null>(null);
@@ -157,6 +172,17 @@ export function Composer({ draft, setDraft, onSend, ready, candidates }: Props) 
               </li>
             );
           })}
+        </ul>
+      )}
+      {mentionStatuses.length > 0 && (
+        <ul className="composer-reach" aria-label="mention reachability">
+          {mentionStatuses.map((s) => (
+            <li key={s.name} className={`composer-reach-item composer-reach-item--${REACH_TIER[s.tier]}`}>
+              <span className="composer-reach-dot" aria-hidden="true" />
+              <span className="composer-reach-name t-mono">@{s.display}</span>
+              <span className="composer-reach-label">{reachLabel(s)}</span>
+            </li>
+          ))}
         </ul>
       )}
       <textarea
