@@ -3,6 +3,7 @@
 import type { AgentContext, MsgFrame } from "@agentparty/shared";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
+import type { IdentityDisplayMap } from "../lib/identityDisplay";
 import { fmtTime } from "../lib/time";
 import { Markdown } from "./Markdown";
 
@@ -11,14 +12,6 @@ interface Props {
   self: string | null;
   identityDisplay?: IdentityDisplayMap;
 }
-
-export interface IdentityDisplay {
-  display: string;
-  kind?: "agent" | "human";
-  account?: string;
-}
-
-export type IdentityDisplayMap = Record<string, IdentityDisplay>;
 
 const BODY_MENTION_RE = /(^|[^a-zA-Z0-9._@-])@([a-zA-Z0-9][a-zA-Z0-9._-]*)/g;
 

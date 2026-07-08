@@ -9,7 +9,7 @@ import { VisibilityToggle } from "../components/VisibilityToggle";
 import { JoinLink } from "../components/JoinLink";
 import { Composer } from "../components/Composer";
 import { Markdown } from "../components/Markdown";
-import { MessageCard, type IdentityDisplayMap } from "../components/MessageCard";
+import { MessageCard } from "../components/MessageCard";
 import { PresenceBar } from "../components/PresenceBar";
 import {
   archiveChannel,
@@ -27,6 +27,7 @@ import {
   ValidationError,
 } from "../lib/api";
 import { agentHue } from "../lib/agentColor";
+import { buildIdentityDisplay, type IdentityDisplayMap } from "../lib/identityDisplay";
 import { mentionCandidates } from "../lib/mentions";
 import { completionMessages } from "../lib/completions";
 import { catchupKey, summarizeCatchup, type CatchupDigest } from "../lib/digest";
@@ -1036,44 +1037,17 @@ export function ChannelPage({
     () => mentionCandidates(state.participants, state.presence, state.self, teamNow),
     [state.participants, state.presence, state.self, teamNow],
   );
-  const identityDisplay = useMemo<IdentityDisplayMap>(() => {
-    const map: IdentityDisplayMap = {};
-    const add = (name: string, input: { display?: string; kind?: "agent" | "human"; account?: string }) => {
-      if (name === "" || name === "system") return;
-      const prev = map[name];
-      const kind = input.kind ?? prev?.kind;
-      const account = input.account ?? prev?.account;
-      const display = input.display ?? (kind === "human" && account ? account : (prev?.display ?? name));
-      map[name] = {
-        display,
-        ...(kind === undefined ? {} : { kind }),
-        ...(account === undefined ? {} : { account }),
-      };
-    };
-
-    for (const identity of channelIdentities) add(identity.name, identity);
-    for (const sender of state.participants) {
-      add(sender.name, { kind: sender.kind, account: sender.owner, display: sender.kind === "human" && sender.owner ? sender.owner : sender.name });
-    }
-    for (const entry of Object.values(state.presence)) {
-      add(entry.name, {
-        kind: entry.kind,
-        account: entry.account,
-        display: entry.kind === "human" && entry.account ? entry.account : entry.name,
-      });
-    }
-    for (const message of state.messages) {
-      add(message.sender.name, {
-        kind: message.sender.kind,
-        account: message.sender.owner,
-        display: message.sender.kind === "human" && message.sender.owner ? message.sender.owner : message.sender.name,
-      });
-    }
-    for (const option of mentionOptions) {
-      add(option.name, { kind: option.kind, account: option.account, display: option.display });
-    }
-    return map;
-  }, [channelIdentities, mentionOptions, state.messages, state.participants, state.presence]);
+  const identityDisplay = useMemo(
+    () =>
+      buildIdentityDisplay({
+        channelIdentities,
+        mentionOptions,
+        messages: state.messages,
+        participants: state.participants,
+        presence: state.presence,
+      }),
+    [channelIdentities, mentionOptions, state.messages, state.participants, state.presence],
+  );
   const agentFilterActive = agentFilter.agents.length > 0;
   const totalInView = q === "" ? timelineMessages.length : searchHits.length;
   const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
