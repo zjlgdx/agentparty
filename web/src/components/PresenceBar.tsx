@@ -161,7 +161,7 @@ export function PresenceBar({
       connectionCount: sender?.connection_count ?? entry?.connection_count ?? (connected ? 1 : 0),
     };
     if (!connected) {
-      return { name, kind, state: "offline", note: null, ts: entry?.ts ?? null, owner: null, ...meta };
+      return { name, kind, state: "offline", note: null, ts: entry?.ts ?? null, owner, ...meta };
     }
     if (entry && entry.state !== "offline") {
       return { name, kind, state: entry.state, note: entry.note, ts: entry.ts, owner, ...meta };
