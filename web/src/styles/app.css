@@ -439,7 +439,8 @@
   font-size: 11px;
 }
 .role-kind,
-.role-badge {
+.role-badge,
+.role-source {
   flex: none;
   padding: 1px 6px;
   border: 1px solid var(--t-faint);
@@ -456,6 +457,11 @@
 .role-kind--agent {
   color: var(--t-accent);
   border-color: var(--d-yellow);
+}
+.role-source {
+  color: var(--d-blue);
+  border-color: var(--d-blue);
+  background: var(--d-blue-soft);
 }
 .role-select,
 .role-input,

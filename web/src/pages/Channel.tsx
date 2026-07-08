@@ -2,7 +2,7 @@
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type ReadCursor, type SearchHit, type Sender, type WakeDelivery } from "@agentparty/shared";
+import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type PresenceEntry, type ReadCursor, type SearchHit, type Sender, type WakeDelivery } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { AgentTokens } from "../components/AgentTokens";
 import { VisibilityToggle } from "../components/VisibilityToggle";
@@ -161,6 +161,35 @@ function roleCountLabel(role: CollaborationRole, count: number, t: TFunc): strin
   return t("Channel.roles.roleCount", { role, count: String(count) });
 }
 
+function selfReportedRoles(
+  assignedRoles: ChannelRoleInfo[],
+  presence: Record<string, PresenceEntry>,
+  identities: ChannelIdentity[],
+): ChannelRoleInfo[] {
+  const assigned = new Set(assignedRoles.map((role) => role.name));
+  const identityByName = new Map(identities.map((identity) => [identity.name, identity]));
+  const roles: ChannelRoleInfo[] = [];
+  for (const [name, entry] of Object.entries(presence)) {
+    if (assigned.has(name)) continue;
+    if (entry.role_source !== "self") continue;
+    if (entry.role === undefined || !COLLAB_ROLES.includes(entry.role)) continue;
+    const identity = identityByName.get(name);
+    const kind = entry.kind ?? identity?.kind;
+    const account = entry.account ?? identity?.account;
+    roles.push({
+      name,
+      role: entry.role,
+      responsibility: entry.note && entry.note.trim() !== "" ? entry.note : null,
+      assigned_by: name,
+      assigned_at: entry.ts ?? entry.last_seen ?? 0,
+      ...(kind === undefined ? {} : { kind }),
+      ...(account === undefined ? {} : { account }),
+      display: identity?.display ?? name,
+    });
+  }
+  return roles;
+}
+
 function CharterBanner({
   charter,
   open,
@@ -245,6 +274,7 @@ function DivisionBoard({
   roleName,
   roleDraft,
   identities,
+  presence,
   onRoleDraft,
   onNewRoleName,
   onNewRoleDraft,
@@ -259,6 +289,7 @@ function DivisionBoard({
   roleName: string;
   roleDraft: RoleDraft;
   identities: ChannelIdentity[];
+  presence: Record<string, PresenceEntry>;
   onRoleDraft: (name: string, draft: RoleDraft) => void;
   onNewRoleName: (name: string) => void;
   onNewRoleDraft: (draft: RoleDraft) => void;
@@ -267,8 +298,11 @@ function DivisionBoard({
 }) {
   const t = useT();
   const identityByName = new Map(identities.map((identity) => [identity.name, identity]));
-  const roleViews = [...roles]
-    .map((role) => roleViewFor(role, identityByName.get(role.name), t))
+  const selfRoles = selfReportedRoles(roles, presence, identities);
+  const roleViews = [
+    ...roles.map((role) => ({ ...roleViewFor(role, identityByName.get(role.name), t), source: "assigned" as const })),
+    ...selfRoles.map((role) => ({ ...roleViewFor(role, identityByName.get(role.name), t), source: "self" as const })),
+  ]
     .sort(
       (a, b) =>
         a.accountLabel.localeCompare(b.accountLabel) ||
@@ -282,7 +316,7 @@ function DivisionBoard({
     else groups.push({ accountLabel: view.accountLabel, roles: [view] });
   }
   const roleCounts = COLLAB_ROLES
-    .map((role) => ({ role, count: roles.filter((item) => item.role === role).length }))
+    .map((role) => ({ role, count: roleViews.filter((item) => item.role.role === role).length }))
     .filter((item) => item.count > 0);
 
   return (
@@ -293,7 +327,7 @@ function DivisionBoard({
           <p className="t-mono">{t("Channel.roles.help")}</p>
         </div>
         <div className="role-board-summary">
-          <span className="t-mono role-board-count">{t("Channel.roles.count", { count: String(roles.length) })}</span>
+          <span className="t-mono role-board-count">{t("Channel.roles.count", { count: String(roleViews.length) })}</span>
           {roleCounts.map((item) => (
             <span key={item.role} className="t-mono role-board-role-count">
               {roleCountLabel(item.role, item.count, t)}
@@ -313,7 +347,7 @@ function DivisionBoard({
                   </span>
                 </header>
                 <div className="role-list">
-                  {group.roles.map(({ role, display, owner, accountLabel, kind }) => {
+                  {group.roles.map(({ role, display, owner, accountLabel, kind, source }) => {
                     const draftForRole = roleDrafts[role.name] ?? roleDraftFrom(role);
                     const title = [
                       role.name !== display ? role.name : null,
@@ -327,6 +361,7 @@ function DivisionBoard({
                         <div className="role-person" title={title}>
                           <span className="role-person-name t-mono">{display}</span>
                           <span className={`role-kind role-kind--${kind}`}>{t(`Composer.kind.${kind}`)}</span>
+                          {source === "self" && <span className="role-source t-mono">{t("Channel.roles.selfReported")}</span>}
                           {owner !== null && <span className="role-owner t-mono">{owner}</span>}
                         </div>
                         {canModerate ? (
@@ -348,11 +383,13 @@ function DivisionBoard({
                               placeholder={t("Channel.roles.responsibilityPlaceholder")}
                             />
                             <button className="d-btn" type="button" disabled={roleSaving === role.name} onClick={() => onSaveRole(role.name, draftForRole)}>
-                              {roleSaving === role.name ? t("Channel.roles.saving") : t("Channel.roles.save")}
+                              {roleSaving === role.name ? t("Channel.roles.saving") : source === "self" ? t("Channel.roles.register") : t("Channel.roles.save")}
                             </button>
-                            <button className="d-btn" type="button" disabled={roleSaving === role.name} onClick={() => onDeleteRole(role.name)}>
-                              {t("Channel.roles.clear")}
-                            </button>
+                            {source === "assigned" && (
+                              <button className="d-btn" type="button" disabled={roleSaving === role.name} onClick={() => onDeleteRole(role.name)}>
+                                {t("Channel.roles.clear")}
+                              </button>
+                            )}
                           </>
                         ) : (
                           <>
@@ -1733,6 +1770,7 @@ export function ChannelPage({
         roleName={newRoleName}
         roleDraft={newRoleDraft}
         identities={channelIdentities}
+        presence={state.presence}
         onRoleDraft={updateRoleDraft}
         onNewRoleName={setNewRoleName}
         onNewRoleDraft={setNewRoleDraft}
