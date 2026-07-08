@@ -1,14 +1,29 @@
 // 消息渲染：message → doodle 卡片外壳 + mono 元信息 + markdown 正文；
 // status → 时间线分隔条（spec §9 第 2 块）。
 import type { AgentContext, MsgFrame } from "@agentparty/shared";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/MessageCard";
 import { fmtTime } from "../lib/time";
 import { Markdown } from "./Markdown";
 
 interface Props {
   msg: MsgFrame;
   self: string | null;
+  canModerate: boolean;
+  onReply(seq: number): void;
+  onEdit(seq: number): void;
+  onRetract(seq: number): void;
+  editing: boolean;
+  editDraft: string;
+  editSaving: boolean;
+  actionError: string | null;
+  busy: boolean;
+  onEditDraftChange(value: string): void;
+  onEditCancel(): void;
+  onEditSave(): void;
 }
 
 function contextBits(ctx: AgentContext | undefined): string[] {
@@ -54,7 +69,27 @@ function reviewTitle(msg: MsgFrame): string {
   ].filter((part): part is string => part !== null).join("\n");
 }
 
-export function MessageCard({ msg, self }: Props) {
+export function MessageCard({
+  msg,
+  self,
+  canModerate,
+  onReply,
+  onEdit,
+  onRetract,
+  editing,
+  editDraft,
+  editSaving,
+  actionError,
+  busy,
+  onEditDraftChange,
+  onEditCancel,
+  onEditSave,
+}: Props) {
+  const t = useT();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
   // 每个 agent 一个确定性色相：CSS 用 --ah 套 hsl() 给头像点/名字/卡片左条上色
   const hueStyle = { "--ah": agentHue(msg.sender.name) } as CSSProperties;
   const owner = msg.sender.owner && msg.sender.owner !== msg.sender.name ? msg.sender.owner : null;
@@ -74,14 +109,57 @@ export function MessageCard({ msg, self }: Props) {
     .join("\n");
   const revisionBadges = [
     msg.completion_artifact !== undefined ? "completion" : null,
-    msg.edited ? "edited" : null,
-    msg.retracted ? "retracted" : null,
+    msg.edited ? t("MessageCard.badge.edited") : null,
+    msg.retracted ? t("MessageCard.badge.retracted") : null,
     msg.supersedes !== undefined ? `supersedes #${msg.supersedes}` : null,
     msg.superseded_by !== undefined ? `superseded by #${msg.superseded_by}` : null,
   ].filter((part): part is string => part !== null);
   const review = msg.completion_review;
   const reviewBadge = reviewLabel(msg);
   const reviewTitleText = reviewTitle(msg);
+  const canRevise = (self !== null && msg.sender.name === self) || canModerate;
+  const canShowActions = msg.kind === "message";
+  const canReply = canShowActions && !msg.retracted;
+  const canEdit = canReply && canRevise;
+  const canRetract = canReply && canRevise;
+  const saveDisabled = editSaving || editDraft.trim() === "" || editDraft === msg.body;
+  const menuItemCount = Number(canReply) + Number(canEdit) + Number(canRetract) + 1;
+
+  useEffect(() => {
+    if (menu === null) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menu]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const openMenuAt = (x: number, y: number) => {
+    const clampedX = Math.max(8, Math.min(x, window.innerWidth - 188));
+    const clampedY = Math.max(8, Math.min(y, window.innerHeight - (menuItemCount * 38 + 18)));
+    setMenu({ x: clampedX, y: clampedY });
+  };
+  const copyText = () => {
+    if (navigator.clipboard !== undefined) {
+      void navigator.clipboard.writeText(msg.body).then(() => setCopied(true)).catch(() => undefined);
+    }
+    setMenu(null);
+  };
 
   if (msg.kind === "status") {
     const context = msg.status?.context;
@@ -151,7 +229,19 @@ export function MessageCard({ msg, self }: Props) {
           artifact.related_prs.length > 0 ? `PRs ${artifact.related_prs.map((n) => `#${n}`).join(", ")}` : null,
         ].filter((part): part is string => part !== null);
   return (
-    <article id={`msg-${msg.seq}`} className={"d-card msg-card" + (mine ? " msg-card--own" : "")} style={hueStyle}>
+    <article
+      id={`msg-${msg.seq}`}
+      className={"d-card msg-card" + (mine ? " msg-card--own" : "")}
+      style={hueStyle}
+      onContextMenu={
+        canShowActions
+          ? (event) => {
+              event.preventDefault();
+              openMenuAt(event.clientX, event.clientY);
+            }
+          : undefined
+      }
+    >
       <header className="d-meta msg-head">
         <span className="msg-avatar" aria-hidden="true" />
         <span className="msg-sender" title={senderTitle}>{msg.sender.name}</span>
@@ -185,9 +275,70 @@ export function MessageCard({ msg, self }: Props) {
           </span>
         )}
         <span className="msg-fill" />
+        {copied && <span className="msg-copy-feedback">{t("MessageCard.copied")}</span>}
+        {canShowActions && (
+          <button
+            ref={triggerRef}
+            type="button"
+            className="d-btn msg-menu-trigger"
+            aria-label={t("MessageCard.menu.more")}
+            aria-expanded={menu !== null}
+            title={t("MessageCard.menu.more")}
+            disabled={busy}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              openMenuAt(rect.right - 12, rect.bottom + 6);
+            }}
+          >
+            ⋯
+          </button>
+        )}
         <span>#{msg.seq}</span>
         <time>{fmtTime(msg.ts)}</time>
       </header>
+      {menu !== null && (
+        <div ref={menuRef} className="msg-menu" style={{ left: menu.x, top: menu.y }}>
+          {canReply && (
+            <button
+              type="button"
+              className="msg-menu-item"
+              onClick={() => {
+                setMenu(null);
+                onReply(msg.seq);
+              }}
+            >
+              {t("MessageCard.menu.reply")}
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              className="msg-menu-item"
+              onClick={() => {
+                setMenu(null);
+                onEdit(msg.seq);
+              }}
+            >
+              {t("MessageCard.menu.edit")}
+            </button>
+          )}
+          {canRetract && (
+            <button
+              type="button"
+              className="msg-menu-item msg-menu-item--danger"
+              onClick={() => {
+                setMenu(null);
+                onRetract(msg.seq);
+              }}
+            >
+              {t("MessageCard.menu.retract")}
+            </button>
+          )}
+          <button type="button" className="msg-menu-item" onClick={copyText}>
+            {t("MessageCard.menu.copy")}
+          </button>
+        </div>
+      )}
       {artifact !== undefined && (
         <div className="msg-completion" aria-label="completion artifact">
           {artifactBits.join(" · ")}
@@ -206,7 +357,30 @@ export function MessageCard({ msg, self }: Props) {
           ].filter((part): part is string => part !== null).join(" · ")}
         </div>
       )}
-      {msg.retracted ? <p className="msg-retracted">message retracted</p> : <Markdown source={msg.body} />}
+      {editing ? (
+        <div className="msg-edit">
+          <textarea
+            className="msg-edit-input t-mono"
+            rows={4}
+            value={editDraft}
+            onChange={(event) => onEditDraftChange(event.target.value)}
+          />
+          <div className="msg-edit-actions">
+            <button type="button" className="d-btn d-btn--primary" disabled={saveDisabled} onClick={onEditSave}>
+              {editSaving ? t("MessageCard.edit.saving") : t("MessageCard.edit.save")}
+            </button>
+            <button type="button" className="d-btn" disabled={editSaving} onClick={onEditCancel}>
+              {t("MessageCard.edit.cancel")}
+            </button>
+          </div>
+          {actionError !== null && <p className="banner banner--red msg-action-error">{actionError}</p>}
+        </div>
+      ) : msg.retracted ? (
+        <p className="msg-retracted">{t("MessageCard.retracted")}</p>
+      ) : (
+        <Markdown source={msg.body} />
+      )}
+      {!editing && actionError !== null && <p className="banner banner--red msg-action-error">{actionError}</p>}
     </article>
   );
 }
