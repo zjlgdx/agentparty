@@ -25,6 +25,11 @@ export const WakeReceiptStrings: LocaleDict = {
     "WakeReceipt.read.unread": "{n} unread",
     "WakeReceipt.read.readTitle": "Read by: {names}",
     "WakeReceipt.read.unreadTitle": "Not yet read (connected): {names}",
+    "WakeReceipt.read.readSection": "Read · {n}",
+    "WakeReceipt.read.unreadSection": "Unread, connected · {n}",
+    "WakeReceipt.read.mentionSection": "@-mention delivery",
+    "WakeReceipt.read.agentNote": "Event-driven agents (webhook / watch-once) don't read line by line — they're woken on @. This shows delivery, not reading.",
+    "WakeReceipt.read.none": "no one yet",
   },
   zh: {
     "WakeReceipt.pre.online": "在线 · 会实时看到",
@@ -47,6 +52,11 @@ export const WakeReceiptStrings: LocaleDict = {
     "WakeReceipt.read.unread": "{n} 未读",
     "WakeReceipt.read.readTitle": "已读：{names}",
     "WakeReceipt.read.unreadTitle": "还没读(在线)：{names}",
+    "WakeReceipt.read.readSection": "已读 · {n}",
+    "WakeReceipt.read.unreadSection": "未读(在线) · {n}",
+    "WakeReceipt.read.mentionSection": "@ 提及送达",
+    "WakeReceipt.read.agentNote": "事件驱动 agent(webhook / watch-once)不逐条读，只在被 @ 时唤醒。这里显示的是送达，不是已读。",
+    "WakeReceipt.read.none": "还没有",
   },
 };
 

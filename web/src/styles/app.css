@@ -2222,20 +2222,83 @@
 .msg-receipt--wake_failed .msg-receipt-label {
   color: #b3261e;
 }
-/* 已读/未读小标（Phase 2）：hover title 看名单 */
-.msg-read {
+/* 统一消息状态条（Phase 3）：已读摘要(可点开 Lark 式弹层) + 内联 @ 唤醒回执 */
+.msg-status-bar {
+  margin-top: 4px;
+}
+.msg-status-line {
   display: flex;
-  gap: 10px;
-  margin: 3px 0 0;
-  font-size: 11px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 11.5px;
 }
-.msg-read-count {
-  cursor: default;
+.msg-status-summary {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
-.msg-read-count--read {
+.msg-status-read {
   color: #2e7d46;
 }
-.msg-read-count--unread {
+.msg-status-unread {
+  color: var(--t-muted, #8a8778);
+}
+.msg-status-caret {
+  font-size: 9px;
+  opacity: 0.7;
+  color: var(--t-muted, #8a8778);
+}
+.msg-status-pop {
+  margin-top: 6px;
+  padding: 8px 11px;
+  border: 2px solid var(--d-ink);
+  border-radius: 11px 8px 12px 7px / 7px 12px 6px 11px;
+  background: var(--t-panel);
+  box-shadow: 3px 3px 0 var(--d-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-width: 360px;
+}
+.msg-status-group-head {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t-body);
+}
+.msg-status-names {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 12px;
+  font-size: 11.5px;
+}
+.msg-status-name {
+  color: var(--t-body);
+}
+.msg-status-name--unread {
+  color: var(--t-muted, #8a8778);
+}
+.msg-status-name-state {
+  color: var(--t-muted, #8a8778);
+}
+.msg-status-note {
+  margin: 0 0 5px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--t-muted, #8a8778);
+}
+.msg-status-empty {
+  margin: 0;
+  font-size: 11px;
   color: var(--t-muted, #8a8778);
 }
 .composer-input {
