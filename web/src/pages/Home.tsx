@@ -2,6 +2,8 @@
 import { useState } from "react";
 import { lastMessagePreview, PresenceDots } from "../components/ChannelList";
 import type { ChannelInfo } from "../lib/api";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/Home";
 
 interface Props {
   channels: ChannelInfo[] | null;
@@ -31,6 +33,7 @@ function ChannelCard({ c, onOpen }: { c: ChannelInfo; onOpen(slug: string): void
 
 export function Home({ channels, onOpen }: Props) {
   const [showArchived, setShowArchived] = useState(false);
+  const t = useT();
   // 归档频道默认不铺在 landing 上（否则被一堆 temp/fixture 刷屏），折叠到底部开关
   const live = channels?.filter((c) => c.archived_at === null) ?? null;
   const archived = channels?.filter((c) => c.archived_at !== null) ?? [];
@@ -59,7 +62,7 @@ export function Home({ channels, onOpen }: Props) {
             aria-expanded={showArchived}
             onClick={() => setShowArchived((v) => !v)}
           >
-            {showArchived ? "▾" : "▸"} 已归档 ({archived.length})
+            {showArchived ? "▾" : "▸"} {t("Home.archivedToggle", { count: archived.length })}
           </button>
           {showArchived && (
             <div className="home-grid">

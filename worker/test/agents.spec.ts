@@ -135,3 +135,81 @@ describe("POST /api/agents", () => {
     expect(list.channels.some((ch) => ch.slug === slug)).toBe(true);
   });
 });
+
+describe("current-account channel agent inventory", () => {
+  it("lists only the caller's own channel-scoped agents and never returns plaintext tokens", async () => {
+    const owner = "owner@leeguoo.com";
+    const other = "other@leeguoo.com";
+    const session = await humanSession(owner);
+    const otherSession = await humanSession(other);
+    const slug = uniq("agents");
+    const created = await api("/api/channels", session, {
+      method: "POST",
+      body: JSON.stringify({ slug, kind: "standing", visibility: "private" }),
+    });
+    expect(created.status).toBe(201);
+
+    const mine = await mintAgent(session, { name: uniq("mine"), channel_scope: slug });
+    expect(mine.status).toBe(201);
+    const mineBody = (await mine.json()) as { name: string };
+    expect((await mintAgent(session, { name: uniq("other-scope"), channel_scope: uniq("elsewhere") })).status).toBe(201);
+    expect((await mintAgent(otherSession, { name: uniq("theirs"), channel_scope: slug })).status).toBe(201);
+
+    const listed = await api(`/api/channels/${slug}/agents`, session);
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as { agents: { name: string; token?: string; owner: string; channel_scope: string }[] };
+    expect(body.agents).toHaveLength(1);
+    expect(body.agents[0]).toMatchObject({ name: mineBody.name, owner, channel_scope: slug });
+    expect(body.agents[0]).not.toHaveProperty("token");
+  });
+
+  it("rotates only the caller's own channel-scoped agent token and invalidates the previous plaintext", async () => {
+    const owner = "owner@leeguoo.com";
+    const session = await humanSession(owner);
+    const slug = uniq("rotate");
+    expect(
+      (
+        await api("/api/channels", session, {
+          method: "POST",
+          body: JSON.stringify({ slug, kind: "standing", visibility: "private" }),
+        })
+      ).status,
+    ).toBe(201);
+    const minted = await mintAgent(session, { name: uniq("bot"), channel_scope: slug });
+    expect(minted.status).toBe(201);
+    const first = (await minted.json()) as { name: string; token: string };
+    expect((await api(`/api/channels/${slug}/messages`, first.token)).status).toBe(200);
+
+    const rotated = await api(`/api/channels/${slug}/agents/${encodeURIComponent(first.name)}/rotate`, session, {
+      method: "POST",
+    });
+    expect(rotated.status).toBe(200);
+    const next = (await rotated.json()) as { name: string; token: string; owner: string; channel_scope: string };
+    expect(next.name).toBe(first.name);
+    expect(next.owner).toBe(owner);
+    expect(next.channel_scope).toBe(slug);
+    expect(next.token).toMatch(/^ap_[0-9a-f]{32}$/);
+    expect(next.token).not.toBe(first.token);
+    expect((await api(`/api/channels/${slug}/messages`, first.token)).status).toBe(401);
+    expect((await api(`/api/channels/${slug}/messages`, next.token)).status).toBe(200);
+  });
+
+  it("does not let another account list or rotate private-channel agents", async () => {
+    const ownerSession = await humanSession("owner@leeguoo.com");
+    const otherSession = await humanSession("other@leeguoo.com");
+    const slug = uniq("private-agents");
+    expect(
+      (
+        await api("/api/channels", ownerSession, {
+          method: "POST",
+          body: JSON.stringify({ slug, kind: "standing", visibility: "private" }),
+        })
+      ).status,
+    ).toBe(201);
+    const minted = await mintAgent(ownerSession, { name: uniq("bot"), channel_scope: slug });
+    const body = (await minted.json()) as { name: string };
+
+    expect((await api(`/api/channels/${slug}/agents`, otherSession)).status).toBe(403);
+    expect((await api(`/api/channels/${slug}/agents/${encodeURIComponent(body.name)}/rotate`, otherSession, { method: "POST" })).status).toBe(403);
+  });
+});

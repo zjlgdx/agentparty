@@ -1,6 +1,8 @@
 // 左侧频道列表：频道名 + 最近一条消息 + 参与者状态点（spec §9 第 1 块）
 import { useState } from "react";
 import type { ChannelInfo } from "../lib/api";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/Home"; // 复用 "已归档 (N)" key，两处折叠开关文案一致
 
 interface Props {
   channels: ChannelInfo[] | null;
@@ -66,6 +68,7 @@ function ChannelPill({
 
 export function ChannelList({ channels, active, error, onOpen }: Props) {
   const [showArchived, setShowArchived] = useState(false);
+  const t = useT();
   // 默认只显示活跃频道；归档的（联调用完的 temp 等）折叠起来，避免刷屏
   const live = channels?.filter((c) => c.archived_at === null) ?? null;
   const archived = channels?.filter((c) => c.archived_at !== null) ?? [];
@@ -88,7 +91,7 @@ export function ChannelList({ channels, active, error, onOpen }: Props) {
             onClick={() => setShowArchived((v) => !v)}
             aria-expanded={showArchived}
           >
-            {showArchived ? "▾" : "▸"} 已归档 ({archived.length})
+            {showArchived ? "▾" : "▸"} {t("Home.archivedToggle", { count: archived.length })}
           </button>
           {showArchived &&
             archived.map((c) => (

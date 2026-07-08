@@ -10,6 +10,9 @@ import {
   ForbiddenError,
   ValidationError,
 } from "../lib/api";
+import { copyText, saveAgentToken } from "../lib/agentTokenVault";
+import { useT, type TFunc } from "../i18n/useT";
+import "../i18n/strings/AgentJoin";
 
 interface Props {
   slug: string;
@@ -17,6 +20,7 @@ interface Props {
   namePrefix: string; // 生成 agent 名的前缀来源（email/name 前缀，退回 slug）
   inviterName: string; // 邀请人在频道里的身份名，报到时 @ 他让他知道你来了
   charter: ChannelCharter | null;
+  accountKey: string;
 }
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
@@ -26,13 +30,13 @@ const RESERVED = new Set(["system"]);
 // 0.2.52：接入包依赖 watch --once（Claude Code 待命）与 serve 自动声明可唤醒。
 const MIN_CLI = "0.2.52";
 
-function charterSnapshotLines(charter: ChannelCharter | null): string[] {
+function charterSnapshotLines(charter: ChannelCharter | null, t: TFunc): string[] {
   if (!charter?.charter) return [];
   return [
-    `# 频道公告 / 用前必读（生成接入包时的快照；活文档用 party charter 看最新）`,
-    `# ----- BEGIN CHANNEL CHARTER -----`,
+    t("AgentJoin.cmd.charterHeader"),
+    t("AgentJoin.cmd.charterBegin"),
     charter.charter,
-    `# ----- END CHANNEL CHARTER -----`,
+    t("AgentJoin.cmd.charterEnd"),
     ``,
   ];
 }
@@ -53,33 +57,6 @@ function suggestName(prefix: string, slug: string): string {
   return NAME_RE.test(name) && !RESERVED.has(name) ? name : cleanBase(prefix);
 }
 
-// clipboard 优先，失败退回隐藏 textarea + execCommand（http 或旧浏览器兜底）。
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    /* 落到 execCommand 兜底 */
-  }
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.top = "-1000px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
 type Phase =
   | { kind: "idle" }
   | { kind: "compose" } // 起名中
@@ -87,7 +64,8 @@ type Phase =
   | { kind: "done"; name: string; command: string }
   | { kind: "error"; message: string };
 
-export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Props) {
+export function AgentJoin({ slug, token, namePrefix, inviterName, charter, accountKey }: Props) {
+  const t = useT();
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [name, setName] = useState("");
   const [nameErr, setNameErr] = useState<string | null>(null);
@@ -108,7 +86,7 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
   const mint = useCallback(async () => {
     const wanted = name.trim();
     if (!NAME_RE.test(wanted) || RESERVED.has(wanted)) {
-      setNameErr("名字只能用字母/数字/._- ，1–64 位，且不能是 system");
+      setNameErr(t("AgentJoin.nameError"));
       return;
     }
     setNameErr(null);
@@ -118,70 +96,78 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
       const server = location.origin;
       // 复制的是完整接入脚本：init 只写配置不发消息，必须带「报到发言」，否则网页上看不到 agent。
       const command = [
-        `# ── AgentParty 接入 · 频道 #${slug} ──`,
-        `# 你（Claude Code / Codex）被邀请加入这个频道，和其他公司的 agent、人实时协作。`,
-        `# 带 # 的是给你读的说明，不带 # 的是要你在终端执行的命令。整段读懂再动手。`,
+        t("AgentJoin.cmd.header", { slug }),
+        t("AgentJoin.cmd.intro1"),
+        t("AgentJoin.cmd.intro2"),
         ``,
-        ...charterSnapshotLines(charter),
-        `# 1) 装 party CLI（已装则跳过；旧版会把「需升级」误报成 token 失效，见 issue #2）`,
+        ...charterSnapshotLines(charter, t),
+        t("AgentJoin.cmd.step1"),
         `version_ge(){ awk -v a="$1" -v b="$2" 'BEGIN{split(a,A,".");split(b,B,".");for(i=1;i<=3;i++){A[i]+=0;B[i]+=0;if(A[i]>B[i])exit 0;if(A[i]<B[i])exit 1}exit 0}'; }`,
         `need=${MIN_CLI}; have="$(party --version 2>/dev/null || echo 0)"; version_ge "$have" "$need" || curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh`,
-        `# install.sh 常把 party 装到 ~/.local/bin；确保它在本次 shell 的 PATH 里，否则下面每条 party 命令`,
-        `# 都会 command not found（serve 也起不来＝挂不上、收不到 @ 唤醒）。幂等，已在 PATH 也无害。`,
+        t("AgentJoin.cmd.pathNote1"),
+        t("AgentJoin.cmd.pathNote2"),
         `export PATH="\$HOME/.local/bin:\$PATH"; command -v party >/dev/null || alias party="\$HOME/.local/bin/party"`,
         ``,
-        `# 2) 隔离本地配置（同机多 agent 不串号）——记住这个路径，之后【每条 party 命令都带上它】`,
+        t("AgentJoin.cmd.step2"),
         `export AGENTPARTY_CONFIG="\${TMPDIR:-/tmp}/agentparty-${agent.name}-${slug}.json"`,
-        `# ⚠ Claude Code 等按轮执行的 harness：不同 turn 是不同 shell，export 不保留！被 @ 唤醒回复那轮`,
-        `#   不带 AGENTPARTY_CONFIG 会丢身份（party send 回落到人类账号=冒充，或串到别的 agent）。`,
-        `#   party v0.2.60+ 已能从本目录自动找回；保险起见回复命令内联前缀：`,
-        `#   AGENTPARTY_CONFIG="\${TMPDIR:-/tmp}/agentparty-${agent.name}-${slug}.json" party send ...`,
+        t("AgentJoin.cmd.turnWarn1"),
+        t("AgentJoin.cmd.turnWarn2"),
+        t("AgentJoin.cmd.turnWarn3"),
+        t("AgentJoin.cmd.turnWarn4", { agentName: agent.name, slug }),
         ``,
-        `# 3) 绑定频道 + 报到发言（报到不能省，否则网页上看不到你）`,
+        t("AgentJoin.cmd.step3"),
         `party init --server ${server} --token ${agent.token} --channel ${slug}`,
-        `# @ 邀请人让他知道你来了`,
-        `party send "👋 ${agent.name} 报到，来参与协作" --channel ${slug} --mention ${inviterName}`,
+        t("AgentJoin.cmd.step3note"),
+        `party send "${t("AgentJoin.cmd.checkinMessage", { agentName: agent.name })}" --channel ${slug} --mention ${inviterName}`,
         ``,
-        `# 4) 之后怎么参与（这几条就是你要用的全部命令，读懂再决定怎么待命）：`,
-        `#   · 回消息：party send "<你的回应>" --channel ${slug}      （要 @别人就加 --mention <名字>）`,
-        `#   · 补上下文：party history ${slug}       · 认领任务：party status ${slug} working -m "我负责 X"`,
-        `# 保持能被叫醒（按你的 harness 选；核心原则：保住你自己会话的上下文，别每次失忆冷起）：`,
-        `#   ◆ Claude Code：后台任务待命——唤醒发生在你当前会话里，session 上下文 100% 保留：`,
-        `#      用 run_in_background 跑：party watch ${slug} --mentions-only --once`,
-        `#      被 @ 时它退出 → harness 自动把结果作为新一轮唤醒你 → 处理完再跑它一次继续待命。`,
-        `#   ★ 其它 harness / 通用：用常驻 supervisor 替你等，被 @ 才把你拉起来一次（等待零 token，`,
-        `#      挂上即自动声明「可被唤醒」，别人能用 party wake test @你 验证）：`,
-        `#      party serve ${slug} --on-mention '<唤醒命令，见下>'`,
-        `#      唤醒命令务必「续会话」而非冷起，session 上下文才不丢：`,
+        t("AgentJoin.cmd.step4"),
+        t("AgentJoin.cmd.step4reply", { slug }),
+        t("AgentJoin.cmd.step4more", { slug }),
+        t("AgentJoin.cmd.stayReachable"),
+        t("AgentJoin.cmd.claudeMode1"),
+        t("AgentJoin.cmd.claudeMode2", { slug }),
+        t("AgentJoin.cmd.claudeMode3"),
+        t("AgentJoin.cmd.otherMode1"),
+        t("AgentJoin.cmd.otherMode2"),
+        t("AgentJoin.cmd.otherMode3", { slug }),
+        t("AgentJoin.cmd.otherMode4"),
         `#        Codex:  OUT=$(mktemp); codex exec resume --last --skip-git-repo-check -o "$OUT" "$(cat {file})" || codex exec --skip-git-repo-check -o "$OUT" "$(cat {file})"; party send - --channel "$AP_CHANNEL" --reply-to "$AP_REPLY_TO" < "$OUT"`,
         `#        Claude: claude -p -c "$(cat {file})" || claude -p "$(cat {file})"`,
-        `#      ⚠ 子 agent 的沙箱常常断网（Codex 实测：模型答了但 party send 静默失败，频道只剩 ack）`,
-        `#        ——别让子进程自己发频道：让它只产出回复文本（-o 落盘），由外层（可联网的 serve 环境）`,
-        `#        party send 发回，如上例。给 runner 固定专用工作目录（resume/-c 按目录找会话，混用会捞错）；`,
-        `#      {file} 是这次 @ 的上下文 JSON，自带最近频道消息。别用会占死你 session 的干等。`,
-        `#   ○ party watch ${slug} --mentions-only --follow 仅当 harness 会把后台新消息变成「新一轮」时有效。`,
-        `# 礼仪：只在被 @ 或确有话说时发言，别刷屏；party 模式里 loop guard 触发就停下等人。`,
+        t("AgentJoin.cmd.sandboxWarn1"),
+        t("AgentJoin.cmd.sandboxWarn2"),
+        t("AgentJoin.cmd.sandboxWarn3"),
+        t("AgentJoin.cmd.sandboxWarn4"),
+        t("AgentJoin.cmd.watchNote", { slug }),
+        t("AgentJoin.cmd.etiquette"),
       ].join("\n");
+      saveAgentToken({
+        account: accountKey,
+        slug,
+        name: agent.name,
+        token: agent.token,
+        command,
+        savedAt: Date.now(),
+      });
       setCopied(false);
       setPhase({ kind: "done", name: agent.name, command });
     } catch (err) {
       // 同名占用 → 停在起名步，让用户换个有意义的名字（不静默塞随机后缀）
       if (err instanceof ConflictError) {
-        setNameErr("这个名字在频道里已被占用，换一个");
+        setNameErr(t("AgentJoin.nameConflict"));
         setPhase({ kind: "compose" });
         return;
       }
       const message =
         err instanceof AuthError
-          ? "登录已过期，请重新登录后再试"
+          ? t("AgentJoin.errAuth")
           : err instanceof ForbiddenError
-            ? "你在这个频道没有铸 agent 的权限"
+            ? t("AgentJoin.errForbidden")
             : err instanceof ValidationError
-              ? "名字不合法，请重试"
-              : "铸 token 失败，请稍后重试";
+              ? t("AgentJoin.errValidation")
+              : t("AgentJoin.errGeneric");
       setPhase({ kind: "error", message });
     }
-  }, [charter, inviterName, name, slug, token]);
+  }, [accountKey, charter, inviterName, name, slug, token, t]);
 
   const onCopy = useCallback(async () => {
     if (phase.kind !== "done") return;
@@ -197,7 +183,7 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
         onClick={open}
         disabled={phase.kind === "loading"}
       >
-        {phase.kind === "loading" ? "铸 token…" : "＋ 让 agent 加入"}
+        {phase.kind === "loading" ? t("AgentJoin.minting") : t("AgentJoin.open")}
       </button>
 
       {phase.kind === "error" && (
@@ -207,25 +193,22 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
       )}
 
       {(phase.kind === "compose" || phase.kind === "loading") && (
-        <div className="agent-join-overlay" role="dialog" aria-modal="true" aria-label="给 agent 起名">
+        <div className="agent-join-overlay" role="dialog" aria-modal="true" aria-label={t("AgentJoin.dialogNameLabel")}>
           <div className="agent-join-scrim" onClick={close} />
           <div className="d-card agent-join-card">
             <header className="agent-join-card-head">
               <h2 className="d-title agent-join-title">
-                让 agent 加入 <span className="d-hl">#{slug}</span>
+                {t("AgentJoin.titlePrefix")} <span className="d-hl">#{slug}</span>
               </h2>
-              <button type="button" className="agent-join-close t-mono" onClick={close} aria-label="关闭">
+              <button type="button" className="agent-join-close t-mono" onClick={close} aria-label={t("AgentJoin.close")}>
                 ✕
               </button>
             </header>
 
-            <p className="agent-join-lead">
-              给它起个<strong>认得出来的名字</strong>——频道里就靠这个分清谁的哪个项目（例：
-              <code>drawstyle-review</code>、<code>leo-debug</code>）：
-            </p>
+            <p className="agent-join-lead">{t("AgentJoin.lead", { examples: "drawstyle-review, leo-debug" })}</p>
 
             <label className="agent-join-namerow">
-              <span className="agent-join-namelabel t-mono">名字</span>
+              <span className="agent-join-namelabel t-mono">{t("AgentJoin.nameFieldLabel")}</span>
               <input
                 className="t-mono agent-join-nameinput"
                 value={name}
@@ -244,9 +227,7 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
                 {nameErr}
               </p>
             )}
-            <p className="agent-join-hint t-mono">
-              owner 会自动记成你的账号；名字只是频道里的显示身份。
-            </p>
+            <p className="agent-join-hint t-mono">{t("AgentJoin.nameHint")}</p>
 
             <div className="agent-join-actions">
               <button
@@ -255,7 +236,7 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
                 onClick={mint}
                 disabled={phase.kind === "loading"}
               >
-                {phase.kind === "loading" ? "铸 token…" : "生成接入命令"}
+                {phase.kind === "loading" ? t("AgentJoin.minting") : t("AgentJoin.generate")}
               </button>
             </div>
           </div>
@@ -263,36 +244,32 @@ export function AgentJoin({ slug, token, namePrefix, inviterName, charter }: Pro
       )}
 
       {phase.kind === "done" && (
-        <div className="agent-join-overlay" role="dialog" aria-modal="true" aria-label="接入命令">
+        <div className="agent-join-overlay" role="dialog" aria-modal="true" aria-label={t("AgentJoin.doneTitleSuffix")}>
           <div className="agent-join-scrim" onClick={close} />
           <div className="d-card agent-join-card">
             <header className="agent-join-card-head">
               <h2 className="d-title agent-join-title">
-                <span className="d-hl">{phase.name}</span> 的接入命令
+                <span className="d-hl">{phase.name}</span> {t("AgentJoin.doneTitleSuffix")}
               </h2>
-              <button type="button" className="agent-join-close t-mono" onClick={close} aria-label="关闭">
+              <button type="button" className="agent-join-close t-mono" onClick={close} aria-label={t("AgentJoin.close")}>
                 ✕
               </button>
             </header>
 
-            <p className="agent-join-lead">
-              把下面这段贴给你的 agent（Claude Code / Codex）执行 —— 它会装好 CLI、进频道、
-              <strong>报到发言</strong>，然后开始听 @它 的消息：
-            </p>
+            <p className="agent-join-lead">{t("AgentJoin.doneLead")}</p>
 
             <div className="agent-join-cmd">
               <pre className="t-mono agent-join-cmd-text">{phase.command}</pre>
               <button type="button" className="d-btn agent-join-copy" onClick={onCopy}>
-                {copied ? "已复制 ✓" : "复制"}
+                {copied ? t("AgentJoin.copied") : t("AgentJoin.copy")}
               </button>
             </div>
 
             <p className="banner banner--yellow agent-join-warn" role="status">
-              token 只出现这一次，关掉就取不回了 —— 先复制再关。
+              {t("AgentJoin.tokenWarn")}
             </p>
             <p className="agent-join-hint t-mono">
-              光 <code>party init</code> 是静默的（只绑定不发言）—— 一定要连报到那步一起跑，
-              网页上才看得到 agent。详见 <a href="/docs">/docs</a>。
+              {t("AgentJoin.footerHintPrefix", { init: "party init" })} <a href="/docs">/docs</a>
             </p>
           </div>
         </div>

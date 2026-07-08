@@ -584,6 +584,83 @@ app.post("/api/agents", requireBearer, async (c) => {
   );
 });
 
+app.get("/api/channels/:slug/agents", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  const slug = c.req.param("slug");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "listing agent tokens requires a human account session"), 403);
+  }
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT name, owner, channel_scope, created_at
+       FROM tokens
+      WHERE owner = ?
+        AND role = 'agent'
+        AND channel_scope = ?
+        AND revoked_at IS NULL
+        AND parent_agent IS NULL
+      ORDER BY created_at DESC, name`,
+  )
+    .bind(identity.account, slug)
+    .all<{ name: string; owner: string; channel_scope: string; created_at: number }>();
+  return c.json({ agents: rows.results ?? [] });
+});
+
+app.post("/api/channels/:slug/agents/:name/rotate", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  const slug = c.req.param("slug");
+  const name = c.req.param("name");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "rotating agent tokens requires a human account session"), 403);
+  }
+  if (!NAME_RE.test(name) || RESERVED_NAMES.includes(name)) {
+    return c.json(errorBody("bad_request", "valid name required"), 400);
+  }
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const row = await c.env.DB.prepare(
+    `SELECT id
+       FROM tokens
+      WHERE name = ?
+        AND owner = ?
+        AND role = 'agent'
+        AND channel_scope = ?
+        AND revoked_at IS NULL
+        AND parent_agent IS NULL`,
+  )
+    .bind(name, identity.account, slug)
+    .first<{ id: number }>();
+  if (!row) return c.json(errorBody("not_found", "agent token not found"), 404);
+  const nextToken = randomToken();
+  const now = Date.now();
+  await c.env.DB.prepare(
+    `UPDATE tokens
+        SET hash = ?, created_at = ?
+      WHERE id = ?`,
+  )
+    .bind(await sha256Hex(nextToken), now, row.id)
+    .run();
+  const stub = await getServerByName(c.env.CHANNELS, slug);
+  const kicked = await stub
+    .fetch(
+      new Request("https://do/internal/kick", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+        headers: { "content-type": "application/json", "x-partykit-room": slug },
+      }),
+    )
+    .then((res) => res.ok)
+    .catch(() => false);
+  return c.json({ token: nextToken, name, role: "agent", owner: identity.account, channel_scope: slug, created_at: now, kicked });
+});
+
 // Agent 子身份（#18 MVP）：父 agent 可在自己的频道 scope 内创建短期 child token。
 // 不建 workflow DAG；只保证可验证的 parent/root/team/depth/expires_at 身份血缘与权限边界。
 app.post("/api/spawn", requireBearer, async (c) => {

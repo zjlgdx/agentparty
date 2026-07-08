@@ -1,0 +1,46 @@
+import { registerDict, type LocaleDict } from "../dict";
+
+export const ChannelStrings: LocaleDict = {
+  en: {
+    "Channel.charter.label": "📌 charter",
+    "Channel.charter.updated": "updated",
+    "Channel.charter.edit": "edit",
+    "Channel.charter.saving": "saving…",
+    "Channel.charter.save": "save",
+    "Channel.charter.cancel": "cancel",
+    "Channel.kick.forbidden": "no permission to remove participants",
+    "Channel.kick.failed": "remove failed",
+    "Channel.archive.confirm": "Archive #{slug}?\n\nLive agents will be kicked, the channel becomes read-only, history stays readable. This can't be undone from the web.",
+    "Channel.archive.forbidden": "no permission to archive",
+    "Channel.archive.failed": "archive failed",
+    "Channel.forbidden": "This is a private channel — you don't have access.",
+    "Channel.archive.buttonTitle": "Archive channel: kicks live agents, stops further writes, keeps history",
+    "Channel.archive.archiving": "archiving…",
+    "Channel.archive.button": "archive",
+    "Channel.panels.summary": "▸ coordination panels · digest / filter / host board / teams / decisions / completions (collapsed by default, click to expand)",
+    "Channel.search.placeholder": "search this channel",
+    "Channel.search.noMatch": "No messages match “{query}”",
+  },
+  zh: {
+    "Channel.charter.label": "📌 公告",
+    "Channel.charter.updated": "已更新",
+    "Channel.charter.edit": "编辑",
+    "Channel.charter.saving": "保存中",
+    "Channel.charter.save": "保存",
+    "Channel.charter.cancel": "取消",
+    "Channel.kick.forbidden": "没有踢出权限",
+    "Channel.kick.failed": "踢出失败",
+    "Channel.archive.confirm": "归档 #{slug}？\n\n在线 agent 会被踢出，频道变为只读，历史仍可查看。这个操作不能在网页上撤销。",
+    "Channel.archive.forbidden": "没有归档权限",
+    "Channel.archive.failed": "归档失败",
+    "Channel.forbidden": "这是私有频道，你没有访问权限",
+    "Channel.archive.buttonTitle": "归档频道：踢出在线 agent，停止后续写入，保留历史",
+    "Channel.archive.archiving": "归档中…",
+    "Channel.archive.button": "归档",
+    "Channel.panels.summary": "▸ 协调面板 · digest / 过滤 / host board / teams / decisions / completions（默认折叠，点开查看）",
+    "Channel.search.placeholder": "搜本频道消息",
+    "Channel.search.noMatch": "没有匹配「{query}」的消息",
+  },
+};
+
+registerDict(ChannelStrings);

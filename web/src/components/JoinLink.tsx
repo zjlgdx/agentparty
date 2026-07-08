@@ -3,6 +3,8 @@
 // 折叠面板：生成（可选有效期）+ 一键复制 + 列出未撤销链接 + 撤销。
 import { useCallback, useState } from "react";
 import { AuthError, createJoinLink, type JoinLinkInfo, listJoinLinks, revokeJoinLink } from "../lib/api";
+import { useT, type TFunc } from "../i18n/useT";
+import "../i18n/strings/JoinLink";
 
 interface Props {
   slug: string;
@@ -10,34 +12,41 @@ interface Props {
   onAuthFailed(message: string): void;
 }
 
-const EXPIRY_OPTIONS: { label: string; sec?: number }[] = [
-  { label: "7 天", sec: 7 * 86400 },
-  { label: "1 天", sec: 86400 },
-  { label: "30 天", sec: 30 * 86400 },
-  { label: "永不过期" }, // sec undefined
-];
+function expiryOptions(t: TFunc): { label: string; sec?: number }[] {
+  return [
+    { label: t("JoinLink.expiry.7d"), sec: 7 * 86400 },
+    { label: t("JoinLink.expiry.1d"), sec: 86400 },
+    { label: t("JoinLink.expiry.30d"), sec: 30 * 86400 },
+    { label: t("JoinLink.expiry.never") }, // sec undefined
+  ];
+}
 
 // 默认单次失效（一个链接只能一个人用）——私有频道更看重隐私。用尽即失效。
-const USES_OPTIONS: { label: string; max?: number }[] = [
-  { label: "单次（一人）", max: 1 },
-  { label: "5 次", max: 5 },
-  { label: "不限次数" }, // max undefined
-];
+function usesOptions(t: TFunc): { label: string; max?: number }[] {
+  return [
+    { label: t("JoinLink.uses.single"), max: 1 },
+    { label: t("JoinLink.uses.5"), max: 5 },
+    { label: t("JoinLink.uses.unlimited") }, // max undefined
+  ];
+}
 
 function linkUrl(link: JoinLinkInfo): string {
   return link.url ?? `${location.origin}/join/${link.code}`;
 }
 
-function expiryLabel(link: JoinLinkInfo): string {
-  if (link.expires_at === null) return "永不过期";
+function expiryLabel(link: JoinLinkInfo, t: TFunc): string {
+  if (link.expires_at === null) return t("JoinLink.neverExpires");
   const left = link.expires_at - Date.now();
-  if (left <= 0) return "已过期";
+  if (left <= 0) return t("JoinLink.expired");
   const days = Math.floor(left / 86400000);
-  if (days >= 1) return `${days} 天后过期`;
-  return `${Math.max(1, Math.floor(left / 3600000))} 小时后过期`;
+  if (days >= 1) return t("JoinLink.expiresInDays", { days });
+  return t("JoinLink.expiresInHours", { hours: Math.max(1, Math.floor(left / 3600000)) });
 }
 
 export function JoinLink({ slug, token, onAuthFailed }: Props) {
+  const t = useT();
+  const EXPIRY_OPTIONS = expiryOptions(t);
+  const USES_OPTIONS = usesOptions(t);
   const [open, setOpen] = useState(false);
   const [links, setLinks] = useState<JoinLinkInfo[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -97,7 +106,7 @@ export function JoinLink({ slug, token, onAuthFailed }: Props) {
         setCopied(url);
         setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500);
       })
-      .catch(() => setError("已生成，但自动复制失败——请手动选中链接复制"));
+      .catch(() => setError(t("JoinLink.copyFailed")));
   }
 
   async function revoke(code: string) {
@@ -117,15 +126,15 @@ export function JoinLink({ slug, token, onAuthFailed }: Props) {
   return (
     <div className="joinlink">
       <button type="button" className="d-btn joinlink-btn" onClick={toggle} aria-expanded={open}>
-        🔗 邀请链接
+        {t("JoinLink.button")}
       </button>
       {open && (
         <div className="joinlink-panel">
           <div className="joinlink-gen">
-            <span className="joinlink-hint">生成一条邀请链接，对方点开登录即加入本私有频道。仅你（房主）可管理。</span>
+            <span className="joinlink-hint">{t("JoinLink.hint")}</span>
             <div className="joinlink-gen-row">
               <label className="joinlink-expiry">
-                使用次数
+                {t("JoinLink.usesLabel")}
                 <select value={usesIdx} onChange={(e) => setUsesIdx(Number(e.target.value))} disabled={busy}>
                   {USES_OPTIONS.map((o, i) => (
                     <option key={o.label} value={i}>
@@ -135,7 +144,7 @@ export function JoinLink({ slug, token, onAuthFailed }: Props) {
                 </select>
               </label>
               <label className="joinlink-expiry">
-                有效期
+                {t("JoinLink.expiryLabel")}
                 <select value={expiryIdx} onChange={(e) => setExpiryIdx(Number(e.target.value))} disabled={busy}>
                   {EXPIRY_OPTIONS.map((o, i) => (
                     <option key={o.label} value={i}>
@@ -145,7 +154,7 @@ export function JoinLink({ slug, token, onAuthFailed }: Props) {
                 </select>
               </label>
               <button type="button" className="d-btn d-btn--primary" disabled={busy} onClick={generate}>
-                {busy ? "…" : "生成并复制"}
+                {busy ? t("JoinLink.generating") : t("JoinLink.generate")}
               </button>
             </div>
           </div>
@@ -158,21 +167,24 @@ export function JoinLink({ slug, token, onAuthFailed }: Props) {
                   <li key={l.code} className="joinlink-item">
                     <code className="joinlink-url t-mono">{url}</code>
                     <span className="joinlink-meta">
-                      {expiryLabel(l)}
-                      {l.max_uses !== null ? ` · ${l.uses}/${l.max_uses} 次` : ` · 已用 ${l.uses}`}
+                      {expiryLabel(l, t)}
+                      {" · "}
+                      {l.max_uses !== null
+                        ? t("JoinLink.usesOf", { uses: l.uses, max: l.max_uses })
+                        : t("JoinLink.usesCount", { uses: l.uses })}
                     </span>
                     <button type="button" className="d-btn joinlink-copy" onClick={() => copy(url)}>
-                      {copied === url ? "已复制" : "复制"}
+                      {copied === url ? t("JoinLink.copied") : t("JoinLink.copy")}
                     </button>
                     <button type="button" className="d-btn joinlink-revoke" disabled={busy} onClick={() => revoke(l.code)}>
-                      撤销
+                      {t("JoinLink.revoke")}
                     </button>
                   </li>
                 );
               })}
             </ul>
           )}
-          {links !== null && active.length === 0 && <p className="joinlink-empty">还没有有效邀请链接</p>}
+          {links !== null && active.length === 0 && <p className="joinlink-empty">{t("JoinLink.empty")}</p>}
         </div>
       )}
     </div>

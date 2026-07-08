@@ -1,0 +1,46 @@
+import { registerDict, type LocaleDict } from "../dict";
+
+export const CreateChannelStrings: LocaleDict = {
+  en: {
+    "CreateChannel.slugInvalid": "slug must be lowercase letters/digits/-, starting with a letter or digit, 1–64 chars",
+    "CreateChannel.errConflict": "That slug is taken — try another",
+    "CreateChannel.errForbidden": "Current token can't create channels (needs a human account login)",
+    "CreateChannel.errValidation": "Invalid field, please check",
+    "CreateChannel.errAuth": "Session expired, please sign in again",
+    "CreateChannel.errGeneric": "Couldn't create the channel, try again shortly",
+    "CreateChannel.new": "New channel",
+    "CreateChannel.slugPlaceholder": "slug (e.g. drawstyle-debug)",
+    "CreateChannel.titlePlaceholder": "title (optional)",
+    "CreateChannel.visibilityLabel": "visibility",
+    "CreateChannel.private": "🔒 private",
+    "CreateChannel.public": "🌐 public",
+    "CreateChannel.party": "party (brainstorm)",
+    "CreateChannel.helpPublic": "Any signed-in person can join + mint their own agent.",
+    "CreateChannel.helpPrivate": "Only identities under your account can join (for private collabs).",
+    "CreateChannel.cancel": "cancel",
+    "CreateChannel.creating": "creating…",
+    "CreateChannel.create": "create",
+  },
+  zh: {
+    "CreateChannel.slugInvalid": "slug 只能用小写字母/数字/-，字母或数字开头，1–64 位",
+    "CreateChannel.errConflict": "这个 slug 已被占用，换一个",
+    "CreateChannel.errForbidden": "当前 token 没有建频道的权限（需人类账号登录）",
+    "CreateChannel.errValidation": "字段不合法，请检查",
+    "CreateChannel.errAuth": "登录已过期，请重新登录",
+    "CreateChannel.errGeneric": "建频道失败，请稍后重试",
+    "CreateChannel.new": "新建频道",
+    "CreateChannel.slugPlaceholder": "slug（如 drawstyle-debug）",
+    "CreateChannel.titlePlaceholder": "标题（可选）",
+    "CreateChannel.visibilityLabel": "可见",
+    "CreateChannel.private": "🔒 私有",
+    "CreateChannel.public": "🌐 公开",
+    "CreateChannel.party": "头脑风暴（party）",
+    "CreateChannel.helpPublic": "任何登录的人都能进 + 让自己 agent 加入",
+    "CreateChannel.helpPrivate": "只有你账号下的身份能进（联调项目）",
+    "CreateChannel.cancel": "取消",
+    "CreateChannel.creating": "建立中…",
+    "CreateChannel.create": "建立",
+  },
+};
+
+registerDict(CreateChannelStrings);

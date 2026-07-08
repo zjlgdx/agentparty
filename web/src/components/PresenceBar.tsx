@@ -5,6 +5,8 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
 import { fmtRel } from "../lib/time";
 import type { SocketStatus } from "../lib/ws";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/PresenceBar";
 
 interface Props {
   presence: Record<string, PresenceEntry>;
@@ -120,6 +122,7 @@ export function PresenceBar({
   removingName = null,
   onRemoveParticipant,
 }: Props) {
+  const t = useT();
   // 相对时间 30s 刷一次
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -264,13 +267,13 @@ export function PresenceBar({
             className="presence-kick"
             type="button"
             disabled={removingName === it.name}
-            title={`踢出 ${it.name}`}
+            title={t("PresenceBar.kickTitle", { name: it.name })}
             onClick={(e) => {
               e.stopPropagation();
               onRemoveParticipant(it.name);
             }}
           >
-            踢出
+            {t("PresenceBar.kick")}
           </button>
         )}
       </span>

@@ -1,6 +1,8 @@
 // 登录闸（spec §10 双轨）：配置了 OIDC 时先给 "Sign in with leeguoo"，粘贴 token 始终保留
 import { useState } from "react";
 import type { OidcConfig } from "../lib/oidc";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/TokenGate";
 
 interface Props {
   error: string | null;
@@ -11,6 +13,7 @@ interface Props {
 
 export function TokenGate({ error, oidc, onSso, onSubmit }: Props) {
   const [value, setValue] = useState("");
+  const t = useT();
 
   return (
     <main className="gate">
@@ -28,7 +31,7 @@ export function TokenGate({ error, oidc, onSso, onSubmit }: Props) {
             >
               Sign in with leeguoo
             </button>
-            <p className="gate-social">用 Google / GitHub 也行——在下一步选</p>
+            <p className="gate-social">{t("TokenGate.ssoHint")}</p>
             <p className="t-mono gate-or">or</p>
           </>
         )}

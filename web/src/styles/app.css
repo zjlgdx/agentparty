@@ -83,6 +83,28 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* ---- 语言切换 ---- */
+.lang-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1.5px solid var(--t-faint);
+  border-radius: 8px 5px 9px 4px / 5px 9px 4px 8px;
+}
+.lang-switch-btn {
+  background: none;
+  border: none;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--t-dim);
+  cursor: pointer;
+  border-radius: 6px 4px 7px 3px / 4px 6px 3px 5px;
+}
+.lang-switch-btn:hover { color: var(--t-accent); }
+.lang-switch-btn.is-active { background: var(--d-yellow); color: var(--d-ink); }
+
 .app-signout {
   margin-left: auto;
   background: none;
@@ -1623,6 +1645,90 @@
 .joinlink-revoke { color: var(--d-red, #c0392b); }
 .joinlink-empty { font-size: 12px; color: var(--t-dim); margin: 0; }
 .joinlink-error { font-size: 12px; color: var(--d-red, #c0392b); margin: 0; }
+.agenttokens { position: relative; }
+.agenttokens-btn { font-size: 13px; }
+.agenttokens-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(620px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 13px;
+  background: var(--t-panel);
+  border: 2.5px solid var(--d-ink);
+  border-radius: 12px 8px 13px 7px / 8px 12px 7px 11px;
+  box-shadow: 4px 5px 0 var(--d-shadow);
+}
+.agenttokens-head,
+.agenttokens-main,
+.agenttokens-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agenttokens-title {
+  font-weight: 700;
+  color: var(--t-text);
+}
+.agenttokens-refresh {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+.agenttokens-hint,
+.agenttokens-empty,
+.agenttokens-meta,
+.agenttokens-subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--t-dim);
+}
+.agenttokens-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--d-red, #c0392b);
+}
+.agenttokens-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agenttokens-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1.5px dashed var(--d-ink);
+  border-radius: 8px;
+}
+.agenttokens-item--stale {
+  opacity: 0.7;
+}
+.agenttokens-name {
+  color: var(--t-text);
+  font-size: 13px;
+}
+.agenttokens-token {
+  padding: 5px 7px;
+  border: 1px solid var(--t-faint);
+  border-radius: 6px;
+  background: var(--t-panel2);
+  color: var(--t-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.agenttokens-rotate {
+  border-color: var(--d-red);
+  color: var(--d-red);
+}
 .archive-channel-btn {
   border-color: var(--d-red);
   color: var(--d-red);

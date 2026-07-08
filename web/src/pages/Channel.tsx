@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import type { CSSProperties } from "react";
 import { buildHostBoard, type HostBoard, type MsgFrame, type SearchHit } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
+import { AgentTokens } from "../components/AgentTokens";
 import { VisibilityToggle } from "../components/VisibilityToggle";
 import { JoinLink } from "../components/JoinLink";
 import { Composer } from "../components/Composer";
@@ -39,6 +40,8 @@ import { fmtTime } from "../lib/time";
 import { groupTeamMessages, summarizeTeams, type TeamMessageThread, type TeamSummary } from "../lib/teams";
 import { ChannelSocket } from "../lib/ws";
 import { channelReducer, initialChannelState } from "../state";
+import { useT, type TFunc } from "../i18n/useT";
+import "../i18n/strings/Channel";
 
 interface Props {
   slug: string;
@@ -51,6 +54,7 @@ interface Props {
   canResetGuard: boolean;
   canModerate: boolean; // owner/admin 才 true：决定是否渲染可见性切换等管理控件（issue #38）
   agentNamePrefix: string; // 生成 agent 名的前缀来源（email/name 前缀，退回 slug）
+  accountKey: string | null;
   inviterName: string; // 当前邀请人的频道身份名，接入包报到时 @ 他
   onAuthFailed(message: string): void;
 }
@@ -146,19 +150,20 @@ function CharterBanner({
   onCancel: () => void;
   onSave: () => void;
 }) {
+  const t = useT();
   const hasCharter = Boolean(charter?.charter);
   if (!hasCharter && !canModerate) return null;
   return (
     <section className={"charter-banner" + (updated ? " charter-banner--updated" : "")}>
       <header className="charter-head">
         <button className="charter-toggle" type="button" onClick={onToggle} aria-expanded={open}>
-          <span>📌 公告</span>
+          <span>{t("Channel.charter.label")}</span>
           {charter ? <span className="t-mono">rev {charter.charter_rev}</span> : null}
-          {updated ? <span className="charter-updated">已更新</span> : null}
+          {updated ? <span className="charter-updated">{t("Channel.charter.updated")}</span> : null}
         </button>
         {canModerate && (
           <button className="d-btn charter-edit" type="button" onClick={onEdit}>
-            编辑
+            {t("Channel.charter.edit")}
           </button>
         )}
       </header>
@@ -173,10 +178,10 @@ function CharterBanner({
               />
               <div className="charter-actions">
                 <button className="d-btn d-btn--primary" type="button" disabled={saving} onClick={onSave}>
-                  {saving ? "保存中" : "保存"}
+                  {saving ? t("Channel.charter.saving") : t("Channel.charter.save")}
                 </button>
                 <button className="d-btn" type="button" disabled={saving} onClick={onCancel}>
-                  取消
+                  {t("Channel.charter.cancel")}
                 </button>
               </div>
               {error !== null && <p className="banner banner--red">{error}</p>}
@@ -586,9 +591,11 @@ export function ChannelPage({
   canResetGuard,
   canModerate,
   agentNamePrefix,
+  accountKey,
   inviterName,
   onAuthFailed,
 }: Props) {
+  const t = useT();
   const [state, dispatch] = useReducer(channelReducer, initialChannelState);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
@@ -655,17 +662,15 @@ export function ChannelPage({
     kickParticipant(token, slug, name, "remove")
       .catch((err: unknown) => {
         if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
-        else if (err instanceof ForbiddenError) setKickError("没有踢出权限");
-        else setKickError("踢出失败");
+        else if (err instanceof ForbiddenError) setKickError(t("Channel.kick.forbidden"));
+        else setKickError(t("Channel.kick.failed"));
       })
       .finally(() => setRemovingName(null));
-  }, [removingName, slug, token]);
+  }, [removingName, slug, token, t]);
 
   const archiveCurrentChannel = useCallback(() => {
     if (archiving || state.archived) return;
-    const ok = window.confirm(
-      `归档 #${slug}？\n\n在线 agent 会被踢出，频道变为只读，历史仍可查看。这个操作不能在网页上撤销。`,
-    );
+    const ok = window.confirm(t("Channel.archive.confirm", { slug }));
     if (!ok) return;
     setArchiving(true);
     setArchiveError(null);
@@ -675,11 +680,11 @@ export function ChannelPage({
       })
       .catch((err: unknown) => {
         if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
-        else if (err instanceof ForbiddenError) setArchiveError("没有归档权限");
-        else setArchiveError("归档失败");
+        else if (err instanceof ForbiddenError) setArchiveError(t("Channel.archive.forbidden"));
+        else setArchiveError(t("Channel.archive.failed"));
       })
       .finally(() => setArchiving(false));
-  }, [archiving, slug, state.archived, token]);
+  }, [archiving, slug, state.archived, token, t]);
 
   useEffect(() => {
     setSeenCharterRev(readSeenCharterRev(slug));
@@ -1079,7 +1084,7 @@ export function ChannelPage({
     return (
       <div className="chan chan--forbidden">
         <p className="banner banner--red" role="alert">
-          这是私有频道，你没有访问权限
+          {t("Channel.forbidden")}
         </p>
       </div>
     );
@@ -1101,7 +1106,25 @@ export function ChannelPage({
       {archiveError !== null && <p className="banner banner--red">{archiveError}</p>}
       {(canMintAgent || canModerate) && !state.archived && (
         <div className="chan-toolbar">
-          {canMintAgent && <AgentJoin slug={slug} token={token} namePrefix={agentNamePrefix} inviterName={inviterName} charter={charter} />}
+          {canMintAgent && accountKey !== null && (
+            <AgentJoin
+              slug={slug}
+              token={token}
+              namePrefix={agentNamePrefix}
+              inviterName={inviterName}
+              charter={charter}
+              accountKey={accountKey}
+            />
+          )}
+          {canMintAgent && accountKey !== null && (
+            <AgentTokens
+              slug={slug}
+              token={token}
+              accountKey={accountKey}
+              inviterName={inviterName}
+              onAuthFailed={onAuthFailed}
+            />
+          )}
           {canModerate && (
             <VisibilityToggle
               slug={slug}
@@ -1118,9 +1141,9 @@ export function ChannelPage({
               className="d-btn archive-channel-btn"
               disabled={archiving}
               onClick={archiveCurrentChannel}
-              title="归档频道：踢出在线 agent，停止后续写入，保留历史"
+              title={t("Channel.archive.buttonTitle")}
             >
-              {archiving ? "归档中…" : "归档"}
+              {archiving ? t("Channel.archive.archiving") : t("Channel.archive.button")}
             </button>
           )}
         </div>
@@ -1143,7 +1166,7 @@ export function ChannelPage({
       {/* chat-first：这些协调/元信息面板默认折叠，避免把核心对话流挤出首屏。展开查看 digest/过滤/host board 等。 */}
       <details className="chan-panels">
         <summary className="chan-panels-summary t-mono">
-          ▸ 协调面板 · digest / 过滤 / host board / teams / decisions / completions（默认折叠，点开查看）
+          {t("Channel.panels.summary")}
         </summary>
         {catchupDigest !== null && catchupDigest.messages > 0 && seenSeq !== null && (
           <CatchupPanel
@@ -1186,7 +1209,7 @@ export function ChannelPage({
               value={search}
               spellCheck={false}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜本频道消息"
+              placeholder={t("Channel.search.placeholder")}
               aria-label="search messages"
             />
             {q !== "" && (
@@ -1263,7 +1286,7 @@ export function ChannelPage({
         )}
         {q !== "" && !searchLoading && searchHits.length === 0 && searchInputError === null && searchError === null && (
           <p className="d-empty" role="status" aria-live="polite">
-            没有匹配「{search.trim()}」的消息
+            {t("Channel.search.noMatch", { query: search.trim() })}
           </p>
         )}
         {q !== "" && !searchLoading && searchHits.length > 0 && visibleSearchHits.length === 0 && (

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChannelList } from "./components/ChannelList";
 import { CreateChannel } from "./components/CreateChannel";
 import { TokenGate } from "./components/TokenGate";
+import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import {
   AuthError,
   clearShareToken,
@@ -32,6 +33,8 @@ import {
 import { ChannelPage } from "./pages/Channel";
 import { Home } from "./pages/Home";
 import { matchChannel, matchJoin, useRoute } from "./router";
+import { useT } from "./i18n/useT";
+import "./i18n/strings/App";
 
 // 邀请链接兑换：未登录时跳 OIDC 会离开页面，用 sessionStorage 把 code 带过登录、回来接着兑换。
 const PENDING_JOIN_KEY = "ap_pending_join";
@@ -45,6 +48,7 @@ function meTitle(me: MeInfo): string {
 }
 
 export function App() {
+  const t = useT();
   const [path, navigate, replace] = useRoute();
   const [token, setToken] = useState<string | null>(() => getToken());
   const [authError, setAuthError] = useState<string | null>(null);
@@ -192,7 +196,7 @@ export function App() {
           replace(`/c/${r.channel_slug}`);
         })
         .catch((e: unknown) => {
-          if (alive) setJoinStatus({ phase: "error", message: e instanceof Error ? e.message : "加入失败" });
+          if (alive) setJoinStatus({ phase: "error", message: e instanceof Error ? e.message : t("App.join.failed") });
         });
       return () => {
         alive = false;
@@ -201,9 +205,9 @@ export function App() {
     // 未登录：存 code 跨登录重定向，跳 OIDC
     if (oidc !== null && !oidcPending) {
       sessionStorage.setItem(PENDING_JOIN_KEY, joinCode);
-      beginLogin(oidc).catch(() => setJoinStatus({ phase: "error", message: "无法开始登录" }));
+      beginLogin(oidc).catch(() => setJoinStatus({ phase: "error", message: t("App.join.loginFailed") }));
     }
-  }, [joinCode, token, oidc, oidcPending, replace]);
+  }, [joinCode, token, oidc, oidcPending, replace, t]);
 
   // 登录身份：topbar 显示 token name/kind/role；readonly 分享链接 401 由页面其它路径接管，这里静默
   useEffect(() => {
@@ -318,15 +322,15 @@ export function App() {
         {joinStatus?.phase === "error" ? (
           <>
             <p className="banner banner--red" role="alert">
-              {joinStatus.message ?? "加入失败"}
+              {joinStatus.message ?? t("App.join.failed")}
             </p>
             <button type="button" className="d-btn" onClick={() => replace("/")}>
-              返回首页
+              {t("App.join.backHome")}
             </button>
           </>
         ) : (
           <p className="banner" role="status" aria-live="polite">
-            正在加入频道…
+            {t("App.join.joining")}
           </p>
         )}
       </main>
@@ -398,6 +402,7 @@ export function App() {
             )}
           </span>
         )}
+        <LanguageSwitcher />
         {!isShareMode() && (
           <button
             type="button"
@@ -453,6 +458,7 @@ export function App() {
               // 可见性切换是 owner 专属：服务端算好的 can_moderate 决定渲不渲染（非 owner 不显会 403 的按钮）
               canModerate={channels?.find((c) => c.slug === slug)?.can_moderate === true}
               agentNamePrefix={(me?.email ?? me?.name ?? slug).split("@")[0] ?? slug}
+              accountKey={me?.email ?? me?.owner ?? me?.name ?? null}
               inviterName={me?.name ?? slug}
               onAuthFailed={onAuthFailed}
             />

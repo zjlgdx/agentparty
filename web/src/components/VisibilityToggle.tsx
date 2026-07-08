@@ -3,6 +3,8 @@
 // 由服务端强制 owner 校验（非 owner → 403，内联报错）。
 import { useState } from "react";
 import { AuthError, ForbiddenError, setChannelVisibility } from "../lib/api";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/VisibilityToggle";
 
 interface Props {
   slug: string;
@@ -13,6 +15,7 @@ interface Props {
 }
 
 export function VisibilityToggle({ slug, token, isPublic, onChanged, onAuthFailed }: Props) {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // private→public 待确认：暂存待暴露的历史条数，用于确认条文案
@@ -50,20 +53,18 @@ export function VisibilityToggle({ slug, token, isPublic, onChanged, onAuthFaile
         className="d-btn vis-btn"
         disabled={busy}
         onClick={() => apply(isPublic ? "private" : "public", false)}
-        title={isPublic ? "转为私有频道（仅成员可见）" : "转为公开频道（任何人可见历史）"}
+        title={isPublic ? t("Visibility.toPrivateTitle") : t("Visibility.toPublicTitle")}
       >
-        {busy ? "…" : isPublic ? "转私有" : "转公开"}
+        {busy ? "…" : isPublic ? t("Visibility.toPrivate") : t("Visibility.toPublic")}
       </button>
       {confirmPublic !== null && (
-        <div className="vis-confirm" role="alertdialog" aria-label="确认转公开">
-          <span className="vis-confirm-text">
-            转公开后，历史 {confirmPublic} 条消息将对任何人可见。确认？
-          </span>
+        <div className="vis-confirm" role="alertdialog" aria-label={t("Visibility.confirmDialogLabel")}>
+          <span className="vis-confirm-text">{t("Visibility.confirmText", { count: confirmPublic })}</span>
           <button type="button" className="d-btn d-btn--primary" disabled={busy} onClick={() => apply("public", true)}>
-            确认转公开
+            {t("Visibility.confirmButton")}
           </button>
           <button type="button" className="d-btn" disabled={busy} onClick={() => setConfirmPublic(null)}>
-            取消
+            {t("Visibility.cancel")}
           </button>
         </div>
       )}

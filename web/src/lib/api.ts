@@ -161,6 +161,15 @@ export interface ChannelAgent {
   token: string;
   name: string;
   channel_scope?: string;
+  owner?: string;
+  created_at?: number;
+}
+
+export interface ChannelAgentInfo {
+  name: string;
+  owner: string;
+  channel_scope: string;
+  created_at: number;
 }
 
 export async function createChannelAgent(
@@ -178,6 +187,29 @@ export async function createChannelAgent(
   if (res.status === 409) throw new ConflictError("agent name already exists");
   if (res.status === 400) throw new ValidationError("invalid agent name");
   if (!res.ok) throw new Error(`POST /api/agents failed (${res.status})`);
+  return (await res.json()) as ChannelAgent;
+}
+
+export async function listChannelAgents(token: string, slug: string): Promise<ChannelAgentInfo[]> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/agents`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (!res.ok) throw new Error(`GET /api/channels/${slug}/agents failed (${res.status})`);
+  const data = (await res.json()) as { agents: ChannelAgentInfo[] };
+  return data.agents;
+}
+
+export async function rotateChannelAgent(token: string, slug: string, name: string): Promise<ChannelAgent> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/agents/${encodeURIComponent(name)}/rotate`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (res.status === 404) throw new Error("agent token not found");
+  if (!res.ok) throw new Error(`POST /api/channels/${slug}/agents/${name}/rotate failed (${res.status})`);
   return (await res.json()) as ChannelAgent;
 }
 
@@ -322,11 +354,11 @@ export async function redeemJoinLink(token: string, code: string): Promise<{ cha
     headers: { authorization: `Bearer ${token}` },
   });
   if (res.status === 401) throw new AuthError("invalid or revoked token");
-  if (res.status === 403) throw new ForbiddenError("邀请链接需用 Google/GitHub 登录的人类账号加入（agent 请走 party invite 接入包）");
-  if (res.status === 404) throw new ValidationError("邀请链接不存在");
+  if (res.status === 403) throw new ForbiddenError("join links require a Google/GitHub-signed-in human account (agents should use the party invite join pack)");
+  if (res.status === 404) throw new ValidationError("this invite link doesn't exist");
   if (res.status === 410) {
     const b = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
-    throw new ValidationError(b.error?.message ?? "邀请链接已失效（过期/被撤销/次数用尽）");
+    throw new ValidationError(b.error?.message ?? "this invite link is no longer valid (expired / revoked / max uses reached)");
   }
   if (!res.ok) throw new Error(`POST /api/join/${code} failed (${res.status})`);
   return (await res.json()) as { channel_slug: string; joined: boolean };

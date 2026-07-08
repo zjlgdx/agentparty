@@ -8,6 +8,8 @@ import {
   ForbiddenError,
   ValidationError,
 } from "../lib/api";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/CreateChannel";
 
 interface Props {
   token: string;
@@ -17,6 +19,7 @@ interface Props {
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export function CreateChannel({ token, onCreated }: Props) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [slug, setSlug] = useState("");
   const [title, setTitle] = useState("");
@@ -36,7 +39,7 @@ export function CreateChannel({ token, onCreated }: Props) {
   const submit = useCallback(async () => {
     const s = slug.trim().toLowerCase();
     if (!SLUG_RE.test(s)) {
-      setErr("slug 只能用小写字母/数字/-，字母或数字开头，1–64 位");
+      setErr(t("CreateChannel.slugInvalid"));
       return;
     }
     setErr(null);
@@ -56,17 +59,17 @@ export function CreateChannel({ token, onCreated }: Props) {
       setBusy(false);
       setErr(
         e instanceof ConflictError
-          ? "这个 slug 已被占用，换一个"
+          ? t("CreateChannel.errConflict")
           : e instanceof ForbiddenError
-            ? "当前 token 没有建频道的权限（需人类账号登录）"
+            ? t("CreateChannel.errForbidden")
             : e instanceof ValidationError
-              ? "字段不合法，请检查"
+              ? t("CreateChannel.errValidation")
               : e instanceof AuthError
-                ? "登录已过期，请重新登录"
-                : "建频道失败，请稍后重试",
+                ? t("CreateChannel.errAuth")
+                : t("CreateChannel.errGeneric"),
       );
     }
-  }, [slug, title, isPublic, party, token, onCreated, reset]);
+  }, [slug, title, isPublic, party, token, onCreated, reset, t]);
 
   if (!open) {
     return (
@@ -80,7 +83,7 @@ export function CreateChannel({ token, onCreated }: Props) {
       >
         <span className="chan-head">
           <span className="newchan-plus">＋</span>
-          <span className="chan-name">新建频道</span>
+          <span className="chan-name">{t("CreateChannel.new")}</span>
         </span>
       </button>
     );
@@ -93,7 +96,7 @@ export function CreateChannel({ token, onCreated }: Props) {
         value={slug}
         autoFocus
         spellCheck={false}
-        placeholder="slug（如 drawstyle-debug）"
+        placeholder={t("CreateChannel.slugPlaceholder")}
         onChange={(e) => setSlug(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") submit();
@@ -103,7 +106,7 @@ export function CreateChannel({ token, onCreated }: Props) {
       <input
         className="newchan-input"
         value={title}
-        placeholder="标题（可选）"
+        placeholder={t("CreateChannel.titlePlaceholder")}
         onChange={(e) => setTitle(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") submit();
@@ -112,14 +115,14 @@ export function CreateChannel({ token, onCreated }: Props) {
       />
       <div className="newchan-opts">
         <label className="newchan-seg">
-          <span className="t-mono newchan-segk">可见</span>
+          <span className="t-mono newchan-segk">{t("CreateChannel.visibilityLabel")}</span>
           <button
             type="button"
             className={"newchan-choice" + (!isPublic ? " is-on" : "")}
             onClick={() => setIsPublic(false)}
             disabled={busy}
           >
-            🔒 私有
+            {t("CreateChannel.private")}
           </button>
           <button
             type="button"
@@ -127,7 +130,7 @@ export function CreateChannel({ token, onCreated }: Props) {
             onClick={() => setIsPublic(true)}
             disabled={busy}
           >
-            🌐 公开
+            {t("CreateChannel.public")}
           </button>
         </label>
         <label className="newchan-check">
@@ -137,11 +140,11 @@ export function CreateChannel({ token, onCreated }: Props) {
             onChange={(e) => setParty(e.target.checked)}
             disabled={busy}
           />
-          <span>头脑风暴（party）</span>
+          <span>{t("CreateChannel.party")}</span>
         </label>
       </div>
       <p className="newchan-help t-mono">
-        {isPublic ? "任何登录的人都能进 + 让自己 agent 加入" : "只有你账号下的身份能进（联调项目）"}
+        {isPublic ? t("CreateChannel.helpPublic") : t("CreateChannel.helpPrivate")}
       </p>
       {err !== null && (
         <p className="banner banner--red newchan-err" role="alert">
@@ -158,10 +161,10 @@ export function CreateChannel({ token, onCreated }: Props) {
           }}
           disabled={busy}
         >
-          取消
+          {t("CreateChannel.cancel")}
         </button>
         <button type="button" className="d-btn d-btn--primary" onClick={submit} disabled={busy}>
-          {busy ? "建立中…" : "建立"}
+          {busy ? t("CreateChannel.creating") : t("CreateChannel.create")}
         </button>
       </div>
     </div>

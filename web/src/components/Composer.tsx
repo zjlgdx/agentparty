@@ -9,6 +9,8 @@ import {
   type MentionCandidate,
   type MentionTier,
 } from "../lib/mentions";
+import { useT } from "../i18n/useT";
+import "../i18n/strings/Composer";
 
 interface Props {
   draft: string;
@@ -18,10 +20,15 @@ interface Props {
   candidates: MentionCandidate[]; // @ 补全候选（participants ∪ presence，已分档排序）
 }
 
-const TIER_LABEL: Record<MentionTier, string> = { online: "在线", wakeable: "可唤醒", recent: "最近" };
 const TIER_DOT: Record<MentionTier, string> = { online: "●", wakeable: "◐", recent: "○" };
 
 export function Composer({ draft, setDraft, onSend, ready, candidates }: Props) {
+  const t = useT();
+  const TIER_LABEL: Record<MentionTier, string> = {
+    online: t("Composer.tier.online"),
+    wakeable: t("Composer.tier.wakeable"),
+    recent: t("Composer.tier.recent"),
+  };
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const [menu, setMenu] = useState<{ start: number; items: MentionCandidate[]; active: number } | null>(null);
 
@@ -107,7 +114,7 @@ export function Composer({ draft, setDraft, onSend, ready, candidates }: Props) 
               style={{ "--ah": agentHue(c.name) } as CSSProperties}
               // hover 看「是谁 + 职责」：显示名 + 账号 + 协作角色（issue #38/#39）
               title={
-                [c.display, c.account && c.account !== c.display ? c.account : "", c.role ? `职责: ${c.role}` : ""]
+                [c.display, c.account && c.account !== c.display ? c.account : "", c.role ? t("Composer.role", { role: c.role }) : ""]
                   .filter(Boolean)
                   .join(" · ")
               }
