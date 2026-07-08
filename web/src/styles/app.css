@@ -285,6 +285,10 @@
 .role-board {
   margin-top: 10px;
   padding: 10px 12px 12px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   background: var(--t-panel);
   border: 2px solid var(--d-ink);
   border-radius: 8px;
@@ -320,10 +324,12 @@
 .role-account-list {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 .role-account-group {
   display: grid;
   gap: 7px;
+  min-width: 0;
 }
 .role-account-head {
   display: flex;
@@ -349,12 +355,15 @@
 .role-list {
   display: grid;
   gap: 7px;
+  min-width: 0;
 }
 .role-row {
   display: grid;
   grid-template-columns: minmax(180px, 1.2fr) minmax(96px, 0.35fr) minmax(220px, 1.4fr) auto auto;
   align-items: center;
   gap: 7px;
+  min-width: 0;
+  max-width: 100%;
 }
 .role-row--new {
   margin-top: 9px;
@@ -405,6 +414,7 @@
 .role-name-input {
   min-width: 0;
   width: 100%;
+  max-width: 100%;
   border: 1.5px solid var(--d-ink);
   border-radius: 7px;
   background: var(--t-panel);
