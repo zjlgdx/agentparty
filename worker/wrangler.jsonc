@@ -29,13 +29,13 @@
     {
       "binding": "DB",
       "database_name": "agentparty",
-      "database_id": "1e52cc2d-e47e-4a0b-8281-81114a5c7e8a",
+      "database_id": "4ded3e26-ed9b-435a-8859-398962ba1e69",
       "migrations_dir": "migrations"
     }
   ],
   "routes": [
     {
-      "pattern": "agentparty.leeguoo.com",
+      "pattern": "party.aixie.de",
       "custom_domain": true
     }
   ]
