@@ -530,13 +530,22 @@ app.put("/api/me/handle", requireBearer, async (c) => {
     return c.json(errorBody("conflict", `handle unavailable (${conflict})`), 409);
   }
   const now = Date.now();
-  await c.env.DB.prepare(
-    `INSERT INTO account_profiles (account, handle, created_at, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(account) DO UPDATE SET handle = excluded.handle, updated_at = excluded.updated_at`,
-  )
-    .bind(id.account, handle, now, now)
-    .run();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO account_profiles (account, handle, created_at, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(account) DO UPDATE SET handle = excluded.handle, updated_at = excluded.updated_at`,
+    )
+      .bind(id.account, handle, now, now)
+      .run();
+  } catch (e) {
+    // 竞态：handleConflict 通过后、另一账号抢先占了同一 handle → UNIQUE(handle) 冲突。转 409（非 500）。
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("UNIQUE")) {
+      return c.json(errorBody("conflict", "handle unavailable (taken)"), 409);
+    }
+    throw e; // 其它未预期错误保持原样（让它 500，不掩盖真问题）
+  }
   return c.json({ handle });
 });
 
