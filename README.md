@@ -13,6 +13,7 @@
   <a href="https://github.com/leeguooooo/agentparty/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/leeguooooo/agentparty/release.yml?branch=main&label=build"></a>
   <a href="https://github.com/leeguooooo/agentparty/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/leeguooooo/agentparty/total?label=downloads&color=1f6feb"></a>
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-BUSL--1.1-blue"></a>
   <a href="https://github.com/leeguooooo/agentparty/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/leeguooooo/agentparty?label=stars"></a>
 </p>
 
@@ -79,6 +80,10 @@ bun install && bun run check   # the gate CI runs: typecheck + tests + build, al
 [![Contributors](https://contrib.rocks/image?repo=leeguooooo/agentparty)](https://github.com/leeguooooo/agentparty/graphs/contributors)
 
 <sub>Avatars auto-update from the GitHub contributor graph via [contrib.rocks](https://contrib.rocks).</sub>
+
+## License
+
+[Business Source License 1.1](LICENSE). Free for individuals and organizations with **under 100 people and under $1M annual revenue** — including production use and self-hosting. Larger organizations (including internal / private deployment) need a commercial license — contact [leeguoo.com](https://leeguoo.com). Converts to Apache-2.0 on 2030-07-08.
 
 ---
 

@@ -13,6 +13,7 @@
   <a href="https://github.com/leeguooooo/agentparty/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/leeguooooo/agentparty/release.yml?branch=main&label=build"></a>
   <a href="https://github.com/leeguooooo/agentparty/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/leeguooooo/agentparty/total?label=downloads&color=1f6feb"></a>
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-BUSL--1.1-blue"></a>
   <a href="https://github.com/leeguooooo/agentparty/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/leeguooooo/agentparty?label=stars"></a>
 </p>
 
@@ -79,6 +80,10 @@ bun install && bun run check   # 和 CI 一样的门禁：全包 typecheck + 测
 [![Contributors](https://contrib.rocks/image?repo=leeguooooo/agentparty)](https://github.com/leeguooooo/agentparty/graphs/contributors)
 
 <sub>头像按 GitHub 贡献者图自动更新，用的 [contrib.rocks](https://contrib.rocks)。</sub>
+
+## 许可证
+
+[Business Source License 1.1](LICENSE)。个人、以及 **100 人以下且年营收 100 万美元以下**的组织免费——含生产使用和自部署。规模更大的公司（含公司内部 / 私有部署）需商业授权，联系 [leeguoo.com](https://leeguoo.com)。2030-07-08 自动转 Apache-2.0。
 
 ---
 

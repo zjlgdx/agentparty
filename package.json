@@ -1,5 +1,6 @@
 {
   "name": "agentparty",
+  "license": "BUSL-1.1",
   "private": true,
   "scripts": {
     "check": "cd cli && bun test && bunx tsc --noEmit && cd ../shared && bunx tsc --noEmit && cd ../web && bun test && bunx tsc --noEmit && bunx vite build && cd ../worker && bun run verify:test-runtime && bunx vitest run && bunx tsc --noEmit",
