@@ -14,7 +14,7 @@ commands:
   login     [--server URL]                          browser sign-in, store account session (human)
   logout                                             clear account session
   whoami    [--json] [--caps]                         print current identity + capabilities (hits /api/me)
-  agent     add <name> [--channel-scope slug]        mint an agent token as yourself (needs login)
+  agent     add <name> [--channel-scope slug] | create <handle> --runner codex|claude|codex-sdk|shell | list
   spawn     <child> --channel-scope slug [--ttl 2h]  create a short-lived child agent from current agent
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
@@ -35,7 +35,7 @@ commands:
   host      board [channel|--channel C] [--since seq] [--limit n] [--json]
   capture   <seq>|list [channel|--channel C] --as decision|requirement|bug|action-item [-m note] [--json] [--issue-body]
   wake      test @agent [channel|--channel C] [--timeout N] [--json]
-  channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug] | role list|set|unset
+  channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug] | invite-agent <owner>/<handle> [slug] | role list|set|unset
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|status|needs-human|all] | remove <channel> --name n | list <channel>
   token     create --name n --role agent|human|readonly --owner label [--channel-scope slug] | revoke <name>   (ADMIN_SECRET env)

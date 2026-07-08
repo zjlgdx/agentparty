@@ -8,6 +8,7 @@ import {
   clearChannelRole,
   createChannel,
   handleRestError,
+  inviteProjectAgent,
   kickParticipant,
   listChannelMembers,
   listChannelRoles,
@@ -31,6 +32,7 @@ const HELP = `usage: party channel create <slug> [--title t] [--temp] [--party] 
        party channel archive [slug]                 archive, kick live agents, keep history
        party channel reset-guard [slug]
        party channel kick <name> [slug] [--remove]
+       party channel invite-agent <owner>/<handle> [slug]
        party channel gate reviewer|off [slug] [--policy sender|owner]
        party channel visibility <slug> public|private [--confirm]
        party channel members <slug>
@@ -73,6 +75,16 @@ function parsePositiveIntFlag(input: string | undefined): number | null | undefi
   if (input === undefined) return undefined;
   const n = Number(input);
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function parseProfileRef(input: string | undefined): { owner: string; handle: string } | null {
+  if (!input) return null;
+  const slash = input.lastIndexOf("/");
+  if (slash <= 0 || slash === input.length - 1) return null;
+  const owner = input.slice(0, slash);
+  const handle = input.slice(slash + 1);
+  if (owner.length > 320 || /[\x00-\x1f\x7f]/.test(owner) || !isName(handle)) return null;
+  return { owner, handle };
 }
 
 export async function run(argv: string[]): Promise<number> {
@@ -184,6 +196,22 @@ export async function run(argv: string[]): Promise<number> {
         const mode = flags.remove === true ? "remove" : "disconnect";
         await kickParticipant(cfg.server, cfg.token, slug, name, mode);
         console.log(mode === "remove" ? `removed ${name} from ${slug}` : `kicked ${name} from ${slug}`);
+        return 0;
+      }
+      case "invite-agent": {
+        const profile = parseProfileRef(positionals[1]);
+        const slug = resolveChannel(positionals[2]);
+        if (!profile || !slug) {
+          console.error("usage: party channel invite-agent <owner>/<handle> [slug]");
+          return 1;
+        }
+        if (!isSlug(slug)) {
+          console.error("slug must match [a-z0-9][a-z0-9-]{0,63}");
+          return 1;
+        }
+        const invite = await inviteProjectAgent(cfg.server, cfg.token, slug, profile.owner, profile.handle);
+        const state = invite.already_invited ? "already invited" : "invited";
+        console.log(`${state} ${profile.owner}/${profile.handle} to ${slug}`);
         return 0;
       }
       case "gate": {
@@ -377,7 +405,7 @@ export async function run(argv: string[]): Promise<number> {
         return 1;
       }
       default:
-        console.error("usage: party channel create|list|archive|reset-guard|kick|gate|visibility|members|join-link|leave|role");
+        console.error("usage: party channel create|list|archive|reset-guard|kick|invite-agent|gate|visibility|members|join-link|leave|role");
         return 1;
     }
   } catch (e) {

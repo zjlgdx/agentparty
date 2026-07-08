@@ -28,6 +28,7 @@ export interface MockOptions {
 export function startOidcMock(opts: MockOptions = {}): OidcMock {
   const requests: RecordedReq[] = [];
   const tokenCalls: Record<string, string>[] = [];
+  const profiles: Record<string, unknown>[] = [];
   let base = "";
 
   const server = Bun.serve({
@@ -98,6 +99,59 @@ export function startOidcMock(opts: MockOptions = {}): OidcMock {
           owner: "fan@example.com",
           ...(b?.channel_scope ? { channel_scope: b.channel_scope } : {}),
         });
+      }
+      if (req.method === "GET" && u.pathname === "/api/agent-profiles") {
+        return Response.json({ profiles });
+      }
+      if (req.method === "POST" && u.pathname === "/api/agent-profiles") {
+        const b = rec.body as Record<string, unknown> | null;
+        const now = Date.now();
+        const profile = {
+          owner_account: "fan@example.com",
+          handle: b?.handle ?? "x",
+          name: b?.name ?? b?.handle ?? "x",
+          runner: b?.runner ?? "codex",
+          repo_url: b?.repo_url ?? null,
+          workdir: b?.workdir ?? null,
+          base_branch: b?.base_branch ?? "main",
+          worktree_strategy: b?.worktree_strategy ?? "branch",
+          rules: b?.rules ?? null,
+          invitable_by: b?.invitable_by ?? "owner",
+          created_at: now,
+          updated_at: now,
+        };
+        profiles.push(profile);
+        return Response.json(profile, { status: 201 });
+      }
+      if (req.method === "POST" && /^\/api\/channels\/[^/]+\/project-agents$/.test(u.pathname)) {
+        const slug = u.pathname.split("/")[3] ?? "dev";
+        const b = rec.body as { owner_account?: string; handle?: string } | null;
+        return Response.json(
+          {
+            id: 1,
+            channel_slug: slug,
+            owner_account: b?.owner_account ?? "fan@example.com",
+            profile_handle: b?.handle ?? "x",
+            invited_by: "fan@example.com",
+            invited_at: Date.now(),
+            already_invited: false,
+            profile: {
+              owner_account: b?.owner_account ?? "fan@example.com",
+              handle: b?.handle ?? "x",
+              name: b?.handle ?? "x",
+              runner: "codex",
+              repo_url: null,
+              workdir: null,
+              base_branch: "main",
+              worktree_strategy: "branch",
+              rules: null,
+              invitable_by: "owner",
+              created_at: Date.now(),
+              updated_at: Date.now(),
+            },
+          },
+          { status: 201 },
+        );
       }
       if (req.method === "POST" && u.pathname === "/api/spawn") {
         const b = rec.body as { name?: string; channel_scope?: string; ttl_sec?: number; team_id?: string } | null;

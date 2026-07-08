@@ -86,6 +86,36 @@ export interface JoinLinkInfo {
   revoked_at: number | null;
 }
 
+export type ProjectAgentRunner = "codex" | "claude" | "codex-sdk" | "shell";
+export type ProjectAgentWorktreeStrategy = "branch" | "shared" | "none";
+export type ProjectAgentInvitableBy = "owner" | "anyone";
+
+export interface ProjectAgentProfile {
+  owner_account: string;
+  handle: string;
+  name: string;
+  runner: ProjectAgentRunner;
+  repo_url: string | null;
+  workdir: string | null;
+  base_branch: string;
+  worktree_strategy: ProjectAgentWorktreeStrategy;
+  rules: string | null;
+  invitable_by: ProjectAgentInvitableBy;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ChannelProjectAgentInvite {
+  id: number;
+  channel_slug: string;
+  owner_account: string;
+  profile_handle: string;
+  invited_by: string;
+  invited_at: number;
+  already_invited?: boolean;
+  profile: ProjectAgentProfile;
+}
+
 function extractError(status: number, body: unknown, raw: string): RestError {
   let code: string | null = null;
   let message = raw || `http ${status}`;
@@ -172,6 +202,48 @@ export async function createAgent(
     headers: bearerJson(token),
     body: JSON.stringify(body),
   })) as { token: string; name: string; owner?: string; channel_scope?: string };
+}
+
+export async function listProjectAgentProfiles(server: string, token: string): Promise<ProjectAgentProfile[]> {
+  const body = await req(server, "/api/agent-profiles", { headers: bearerJson(token) });
+  const profiles = (body as Record<string, unknown> | null)?.profiles;
+  return Array.isArray(profiles) ? (profiles as ProjectAgentProfile[]) : [];
+}
+
+export async function createProjectAgentProfile(
+  server: string,
+  token: string,
+  body: {
+    handle: string;
+    name?: string;
+    runner: ProjectAgentRunner;
+    repo_url?: string;
+    workdir?: string;
+    base_branch?: string;
+    worktree_strategy?: ProjectAgentWorktreeStrategy;
+    rules?: string;
+    invitable_by?: ProjectAgentInvitableBy;
+  },
+): Promise<ProjectAgentProfile> {
+  return (await req(server, "/api/agent-profiles", {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as ProjectAgentProfile;
+}
+
+export async function inviteProjectAgent(
+  server: string,
+  token: string,
+  slug: string,
+  ownerAccount: string,
+  handle: string,
+): Promise<ChannelProjectAgentInvite> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/project-agents`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify({ owner_account: ownerAccount, handle }),
+  })) as ChannelProjectAgentInvite;
 }
 
 export async function spawnAgent(

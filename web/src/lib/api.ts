@@ -182,6 +182,36 @@ export interface ChannelAgentInfo {
   created_at: number;
 }
 
+export type ProjectAgentRunner = "codex" | "claude" | "codex-sdk" | "shell";
+export type ProjectAgentWorktreeStrategy = "branch" | "shared" | "none";
+export type ProjectAgentInvitableBy = "owner" | "anyone";
+
+export interface ProjectAgentProfile {
+  owner_account: string;
+  handle: string;
+  name: string;
+  runner: ProjectAgentRunner;
+  repo_url: string | null;
+  workdir: string | null;
+  base_branch: string;
+  worktree_strategy: ProjectAgentWorktreeStrategy;
+  rules: string | null;
+  invitable_by: ProjectAgentInvitableBy;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ChannelProjectAgentInvite {
+  id: number;
+  channel_slug: string;
+  owner_account: string;
+  profile_handle: string;
+  invited_by: string;
+  invited_at: number;
+  already_invited?: boolean;
+  profile: ProjectAgentProfile;
+}
+
 export async function createChannelAgent(
   slug: string,
   name: string,
@@ -209,6 +239,59 @@ export async function listChannelAgents(token: string, slug: string): Promise<Ch
   if (!res.ok) throw new Error(`GET /api/channels/${slug}/agents failed (${res.status})`);
   const data = (await res.json()) as { agents: ChannelAgentInfo[] };
   return data.agents;
+}
+
+export async function listProjectAgentProfiles(token: string): Promise<ProjectAgentProfile[]> {
+  const res = await fetch("/api/agent-profiles", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (!res.ok) throw new Error(`GET /api/agent-profiles failed (${res.status})`);
+  const data = (await res.json()) as { profiles: ProjectAgentProfile[] };
+  return data.profiles;
+}
+
+export async function createProjectAgentProfile(
+  token: string,
+  body: {
+    handle: string;
+    runner: ProjectAgentRunner;
+    repo_url?: string;
+    workdir?: string;
+    base_branch?: string;
+    worktree_strategy?: ProjectAgentWorktreeStrategy;
+    rules?: string;
+    invitable_by?: ProjectAgentInvitableBy;
+  },
+): Promise<ProjectAgentProfile> {
+  const res = await fetch("/api/agent-profiles", {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (res.status === 400) throw new ValidationError("invalid project agent profile");
+  if (!res.ok) throw new Error(`POST /api/agent-profiles failed (${res.status})`);
+  return (await res.json()) as ProjectAgentProfile;
+}
+
+export async function inviteProjectAgent(
+  token: string,
+  slug: string,
+  profile: ProjectAgentProfile,
+): Promise<ChannelProjectAgentInvite> {
+  const res = await fetch(`/api/channels/${encodeURIComponent(slug)}/project-agents`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ owner_account: profile.owner_account, handle: profile.handle }),
+  });
+  if (res.status === 401) throw new AuthError("invalid or revoked token");
+  if (res.status === 403) throw new ForbiddenError("forbidden");
+  if (res.status === 400) throw new ValidationError("invalid project agent invite");
+  if (!res.ok) throw new Error(`POST /api/channels/${slug}/project-agents failed (${res.status})`);
+  return (await res.json()) as ChannelProjectAgentInvite;
 }
 
 export async function fetchChannelIdentities(token: string, slug: string): Promise<ChannelIdentity[]> {

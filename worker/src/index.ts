@@ -138,6 +138,11 @@ const CLI_CLIENT_ID = "agentparty-cli";
 const CAPTURE_NOTE_MAX = 4000;
 const SPAWN_DEFAULT_TTL_SEC = 2 * 60 * 60;
 const SPAWN_MAX_TTL_SEC = 24 * 60 * 60;
+const PROFILE_TEXT_MAX = 4096;
+const PROFILE_BRANCH_MAX = 128;
+const PROJECT_AGENT_RUNNERS = ["codex", "claude", "codex-sdk", "shell"] as const;
+const PROJECT_AGENT_WORKTREE = ["branch", "shared", "none"] as const;
+const PROJECT_AGENT_INVITABLE = ["owner", "anyone"] as const;
 const textEncoder = new TextEncoder();
 
 function errorBody(code: RestErrorCode, message: string) {
@@ -158,6 +163,44 @@ function randomJoinCode(): string {
 
 function validAccountParam(input: string): boolean {
   return input.length > 0 && input.length <= 320 && !/[\x00-\x1f\x7f]/.test(input);
+}
+
+function optionalProfileText(input: unknown, max = PROFILE_TEXT_MAX): string | null | undefined {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  if (typeof input !== "string") return null;
+  const value = input.trim();
+  return textEncoder.encode(value).byteLength <= max ? value : null;
+}
+
+function projectAgentProfileFromRow(row: {
+  owner_account: string;
+  handle: string;
+  name: string;
+  runner: string;
+  repo_url: string | null;
+  workdir: string | null;
+  base_branch: string;
+  worktree_strategy: string;
+  rules: string | null;
+  invitable_by: string;
+  created_at: number;
+  updated_at: number;
+}) {
+  return {
+    owner_account: row.owner_account,
+    handle: row.handle,
+    name: row.name,
+    runner: row.runner,
+    repo_url: row.repo_url,
+    workdir: row.workdir,
+    base_branch: row.base_branch,
+    worktree_strategy: row.worktree_strategy,
+    rules: row.rules,
+    invitable_by: row.invitable_by,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 function isOpaqueHumanSessionName(name: string): boolean {
@@ -697,6 +740,156 @@ app.post("/api/agents", requireBearer, async (c) => {
   );
 });
 
+app.get("/api/agent-profiles", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "listing project agent profiles requires a human account session"), 403);
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT owner_account, handle, name, runner, repo_url, workdir, base_branch,
+            worktree_strategy, rules, invitable_by, created_at, updated_at
+       FROM agent_profiles
+      WHERE owner_account = ?
+      ORDER BY updated_at DESC, handle`,
+  )
+    .bind(identity.account)
+    .all<Parameters<typeof projectAgentProfileFromRow>[0]>();
+  return c.json({ profiles: (rows.results ?? []).map(projectAgentProfileFromRow) });
+});
+
+app.post("/api/agent-profiles", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "creating a project agent profile requires a human account session"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+  const handle = typeof body?.handle === "string" ? body.handle : "";
+  const name = typeof body?.name === "string" && body.name.trim() !== "" ? body.name.trim() : handle;
+  const runner = typeof body?.runner === "string" ? body.runner : "";
+  const repoUrl = optionalProfileText(body?.repo_url);
+  const workdir = optionalProfileText(body?.workdir);
+  const baseBranch = body?.base_branch === undefined ? "main" : optionalProfileText(body.base_branch, PROFILE_BRANCH_MAX);
+  const worktreeStrategy = body?.worktree_strategy === undefined ? "branch" : body.worktree_strategy;
+  const rules = optionalProfileText(body?.rules);
+  const invitableBy = body?.invitable_by === undefined ? "owner" : body.invitable_by;
+
+  if (!NAME_RE.test(handle) || RESERVED_NAMES.includes(handle)) {
+    return c.json(errorBody("bad_request", "handle must be a valid agent/name token"), 400);
+  }
+  if (!PROJECT_AGENT_RUNNERS.includes(runner as (typeof PROJECT_AGENT_RUNNERS)[number])) {
+    return c.json(errorBody("bad_request", "runner must be codex, claude, codex-sdk, or shell"), 400);
+  }
+  if (repoUrl === null || workdir === null || rules === null) {
+    return c.json(errorBody("bad_request", `repo_url, workdir, and rules must be strings <= ${PROFILE_TEXT_MAX} bytes`), 400);
+  }
+  if (baseBranch === null || baseBranch === "") {
+    return c.json(errorBody("bad_request", `base_branch must be a string <= ${PROFILE_BRANCH_MAX} bytes`), 400);
+  }
+  if (!PROJECT_AGENT_WORKTREE.includes(worktreeStrategy as (typeof PROJECT_AGENT_WORKTREE)[number])) {
+    return c.json(errorBody("bad_request", "worktree_strategy must be branch, shared, or none"), 400);
+  }
+  if (!PROJECT_AGENT_INVITABLE.includes(invitableBy as (typeof PROJECT_AGENT_INVITABLE)[number])) {
+    return c.json(errorBody("bad_request", "invitable_by must be owner or anyone"), 400);
+  }
+
+  const now = Date.now();
+  await c.env.DB.prepare(
+    `INSERT INTO agent_profiles (
+       owner_account, handle, name, runner, repo_url, workdir, base_branch,
+       worktree_strategy, rules, invitable_by, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(owner_account, handle) DO UPDATE SET
+       name = excluded.name,
+       runner = excluded.runner,
+       repo_url = excluded.repo_url,
+       workdir = excluded.workdir,
+       base_branch = excluded.base_branch,
+       worktree_strategy = excluded.worktree_strategy,
+       rules = excluded.rules,
+       invitable_by = excluded.invitable_by,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      identity.account,
+      handle,
+      name,
+      runner,
+      repoUrl ?? null,
+      workdir ?? null,
+      baseBranch,
+      worktreeStrategy,
+      rules ?? null,
+      invitableBy,
+      now,
+      now,
+    )
+    .run();
+  const row = await c.env.DB.prepare(
+    `SELECT owner_account, handle, name, runner, repo_url, workdir, base_branch,
+            worktree_strategy, rules, invitable_by, created_at, updated_at
+       FROM agent_profiles
+      WHERE owner_account = ? AND handle = ?`,
+  )
+    .bind(identity.account, handle)
+    .first<Parameters<typeof projectAgentProfileFromRow>[0]>();
+  return c.json(projectAgentProfileFromRow(row!), 201);
+});
+
+app.get("/api/agent-profiles/invites", requireBearer, async (c) => {
+  const identity = c.get("identity");
+  if (identity.account == null) {
+    return c.json(errorBody("forbidden", "listing project agent invites requires an account session"), 403);
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT i.id, i.channel_slug, i.owner_account, i.profile_handle, i.invited_by, i.invited_at,
+            p.name, p.runner, p.repo_url, p.workdir, p.base_branch, p.worktree_strategy, p.rules, p.invitable_by
+       FROM channel_agent_invites i
+       JOIN agent_profiles p ON p.owner_account = i.owner_account AND p.handle = i.profile_handle
+      WHERE i.owner_account = ?
+        AND i.revoked_at IS NULL
+      ORDER BY i.invited_at DESC, i.channel_slug`,
+  )
+    .bind(identity.account)
+    .all<{
+      id: number;
+      channel_slug: string;
+      owner_account: string;
+      profile_handle: string;
+      invited_by: string;
+      invited_at: number;
+      name: string;
+      runner: string;
+      repo_url: string | null;
+      workdir: string | null;
+      base_branch: string;
+      worktree_strategy: string;
+      rules: string | null;
+      invitable_by: string;
+    }>();
+  return c.json({
+    invites: (rows.results ?? []).map((row) => ({
+      id: row.id,
+      channel_slug: row.channel_slug,
+      owner_account: row.owner_account,
+      profile_handle: row.profile_handle,
+      invited_by: row.invited_by,
+      invited_at: row.invited_at,
+      profile: {
+        owner_account: row.owner_account,
+        handle: row.profile_handle,
+        name: row.name,
+        runner: row.runner,
+        repo_url: row.repo_url,
+        workdir: row.workdir,
+        base_branch: row.base_branch,
+        worktree_strategy: row.worktree_strategy,
+        rules: row.rules,
+        invitable_by: row.invitable_by,
+      },
+    })),
+  });
+});
+
 app.get("/api/channels/:slug/agents", requireBearer, async (c) => {
   const identity = c.get("identity");
   const slug = c.req.param("slug");
@@ -997,6 +1190,83 @@ app.post("/api/channels", async (c) => {
     }
   }
   return c.json({ slug, title, kind, mode, visibility }, 201);
+});
+
+app.post("/api/channels/:slug/project-agents", async (c) => {
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (channel.archived_at !== null) {
+    return c.json(errorBody("archived", "channel is archived"), 410);
+  }
+  const identity = c.get("identity");
+  if (identity.role === "readonly") {
+    return c.json(errorBody("forbidden", "readonly sessions cannot invite project agents"), 403);
+  }
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const body = (await c.req.json().catch(() => null)) as { owner_account?: unknown; handle?: unknown } | null;
+  const ownerAccount = typeof body?.owner_account === "string" ? body.owner_account : "";
+  const handle = typeof body?.handle === "string" ? body.handle : "";
+  if (!validAccountParam(ownerAccount) || !NAME_RE.test(handle)) {
+    return c.json(errorBody("bad_request", "owner_account and valid handle required"), 400);
+  }
+  const profile = await c.env.DB.prepare(
+    `SELECT owner_account, handle, name, runner, repo_url, workdir, base_branch,
+            worktree_strategy, rules, invitable_by, created_at, updated_at
+       FROM agent_profiles
+      WHERE owner_account = ? AND handle = ?`,
+  )
+    .bind(ownerAccount, handle)
+    .first<Parameters<typeof projectAgentProfileFromRow>[0]>();
+  if (!profile) return c.json(errorBody("not_found", "project agent profile not found"), 404);
+  if (profile.invitable_by === "owner" && identity.account !== ownerAccount) {
+    return c.json(errorBody("forbidden", "this project agent can only be invited by its owner"), 403);
+  }
+
+  const existing = await c.env.DB.prepare(
+    `SELECT id, channel_slug, owner_account, profile_handle, invited_by, invited_at
+       FROM channel_agent_invites
+      WHERE channel_slug = ?
+        AND owner_account = ?
+        AND profile_handle = ?
+        AND revoked_at IS NULL`,
+  )
+    .bind(slug, ownerAccount, handle)
+    .first<{
+      id: number;
+      channel_slug: string;
+      owner_account: string;
+      profile_handle: string;
+      invited_by: string;
+      invited_at: number;
+    }>();
+  if (existing) {
+    return c.json({ ...existing, profile: projectAgentProfileFromRow(profile), already_invited: true });
+  }
+
+  const invitedBy = identity.account ?? identity.name;
+  const invitedAt = Date.now();
+  const result = await c.env.DB.prepare(
+    `INSERT INTO channel_agent_invites (channel_slug, owner_account, profile_handle, invited_by, invited_at, revoked_at)
+     VALUES (?, ?, ?, ?, ?, NULL)`,
+  )
+    .bind(slug, ownerAccount, handle, invitedBy, invitedAt)
+    .run();
+  return c.json(
+    {
+      id: result.meta.last_row_id,
+      channel_slug: slug,
+      owner_account: ownerAccount,
+      profile_handle: handle,
+      invited_by: invitedBy,
+      invited_at: invitedAt,
+      profile: projectAgentProfileFromRow(profile),
+      already_invited: false,
+    },
+    201,
+  );
 });
 
 app.get("/api/channels/:slug/members", async (c) => {

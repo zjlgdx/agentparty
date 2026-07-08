@@ -3,8 +3,14 @@ import {
   AuthError,
   type ChannelAgentInfo,
   ForbiddenError,
+  type ProjectAgentProfile,
+  type ProjectAgentRunner,
+  createProjectAgentProfile,
+  inviteProjectAgent,
   listChannelAgents,
+  listProjectAgentProfiles,
   rotateChannelAgent,
+  ValidationError,
 } from "../lib/api";
 import {
   buildMinimalAgentCommand,
@@ -27,6 +33,13 @@ interface Props {
 }
 
 type CopyTarget = `${string}:token` | `${string}:command`;
+type ProfileForm = {
+  handle: string;
+  runner: ProjectAgentRunner;
+  workdir: string;
+  baseBranch: string;
+  rules: string;
+};
 
 export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed, active, onActiveChange }: Props) {
   const t = useT();
@@ -34,7 +47,17 @@ export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
   const [open, setOpen] = useState(false);
   const [agents, setAgents] = useState<ChannelAgentInfo[] | null>(null);
+  const [profiles, setProfiles] = useState<ProjectAgentProfile[] | null>(null);
+  const [profileForm, setProfileForm] = useState<ProfileForm>({
+    handle: "",
+    runner: "codex",
+    workdir: "",
+    baseBranch: "main",
+    rules: "",
+  });
   const [busyName, setBusyName] = useState<string | null>(null);
+  const [busyProfile, setBusyProfile] = useState<string | null>(null);
+  const [creatingProfile, setCreatingProfile] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<CopyTarget | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(() => new Set());
@@ -47,7 +70,12 @@ export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      setAgents(await listChannelAgents(token, slug));
+      const [nextAgents, nextProfiles] = await Promise.all([
+        listChannelAgents(token, slug),
+        listProjectAgentProfiles(token),
+      ]);
+      setAgents(nextAgents);
+      setProfiles(nextProfiles);
     } catch (err) {
       if (err instanceof AuthError) onAuthFailed(err.message);
       else if (err instanceof ForbiddenError) setError(t("AgentTokens.errForbidden"));
@@ -157,6 +185,50 @@ export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed
     }
   }
 
+  async function createProfile() {
+    const handle = profileForm.handle.trim();
+    if (handle === "") {
+      setError(t("AgentTokens.errProfileInvalid"));
+      return;
+    }
+    setCreatingProfile(true);
+    setError(null);
+    try {
+      await createProjectAgentProfile(token, {
+        handle,
+        runner: profileForm.runner,
+        ...(profileForm.workdir.trim() === "" ? {} : { workdir: profileForm.workdir.trim() }),
+        ...(profileForm.baseBranch.trim() === "" ? {} : { base_branch: profileForm.baseBranch.trim() }),
+        ...(profileForm.rules.trim() === "" ? {} : { rules: profileForm.rules.trim() }),
+      });
+      setProfileForm((current) => ({ ...current, handle: "", workdir: "", rules: "" }));
+      await refresh();
+    } catch (err) {
+      if (err instanceof AuthError) onAuthFailed(err.message);
+      else if (err instanceof ForbiddenError) setError(t("AgentTokens.errProfileForbidden"));
+      else if (err instanceof ValidationError) setError(t("AgentTokens.errProfileInvalid"));
+      else setError(t("AgentTokens.errProfileSave"));
+    } finally {
+      setCreatingProfile(false);
+    }
+  }
+
+  async function inviteProfile(profile: ProjectAgentProfile) {
+    const key = `${profile.owner_account}/${profile.handle}`;
+    setBusyProfile(key);
+    setError(null);
+    try {
+      await inviteProjectAgent(token, slug, profile);
+      await refresh();
+    } catch (err) {
+      if (err instanceof AuthError) onAuthFailed(err.message);
+      else if (err instanceof ForbiddenError) setError(t("AgentTokens.errInviteForbidden"));
+      else setError(t("AgentTokens.errInvite"));
+    } finally {
+      setBusyProfile(null);
+    }
+  }
+
   return (
     <div className="agenttokens" ref={rootRef}>
       <button type="button" className="d-btn agenttokens-btn" onClick={toggle} aria-expanded={isOpen}>
@@ -172,7 +244,7 @@ export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed
           </div>
           <p className="agenttokens-hint">{t("AgentTokens.hint")}</p>
           {error !== null && <p className="agenttokens-error">{error}</p>}
-          {agents === null && error === null && <p className="agenttokens-empty">{t("AgentTokens.loading")}</p>}
+          {(agents === null || profiles === null) && error === null && <p className="agenttokens-empty">{t("AgentTokens.loading")}</p>}
           {agents !== null && agents.length === 0 && localOnly.length === 0 && (
             <p className="agenttokens-empty">{t("AgentTokens.empty")}</p>
           )}
@@ -230,6 +302,76 @@ export function AgentTokens({ slug, token, accountKey, inviterName, onAuthFailed
               </ul>
             </>
           )}
+          <div className="agenttokens-project">
+            <div className="agenttokens-project-head">
+              <p className="agenttokens-subtitle">{t("AgentTokens.projectTitle")}</p>
+              <span className="agenttokens-meta">{profiles === null ? "" : profiles.length}</span>
+            </div>
+            <div className="agenttokens-profile-form">
+              <input
+                className="agenttokens-input t-mono"
+                value={profileForm.handle}
+                onChange={(event) => setProfileForm((current) => ({ ...current, handle: event.target.value }))}
+                placeholder={t("AgentTokens.profileHandle")}
+                aria-label={t("AgentTokens.profileHandle")}
+              />
+              <select
+                className="agenttokens-input"
+                value={profileForm.runner}
+                onChange={(event) => setProfileForm((current) => ({ ...current, runner: event.target.value as ProjectAgentRunner }))}
+                aria-label={t("AgentTokens.profileRunner")}
+              >
+                <option value="codex">codex</option>
+                <option value="claude">claude</option>
+                <option value="codex-sdk">codex-sdk</option>
+                <option value="shell">shell</option>
+              </select>
+              <input
+                className="agenttokens-input"
+                value={profileForm.workdir}
+                onChange={(event) => setProfileForm((current) => ({ ...current, workdir: event.target.value }))}
+                placeholder={t("AgentTokens.profileWorkdir")}
+                aria-label={t("AgentTokens.profileWorkdir")}
+              />
+              <input
+                className="agenttokens-input t-mono"
+                value={profileForm.baseBranch}
+                onChange={(event) => setProfileForm((current) => ({ ...current, baseBranch: event.target.value }))}
+                placeholder={t("AgentTokens.profileBase")}
+                aria-label={t("AgentTokens.profileBase")}
+              />
+              <input
+                className="agenttokens-input agenttokens-input--wide"
+                value={profileForm.rules}
+                onChange={(event) => setProfileForm((current) => ({ ...current, rules: event.target.value }))}
+                placeholder={t("AgentTokens.profileRules")}
+                aria-label={t("AgentTokens.profileRules")}
+              />
+              <button type="button" className="d-btn agenttokens-create-profile" disabled={creatingProfile} onClick={createProfile}>
+                {creatingProfile ? t("AgentTokens.creatingProfile") : t("AgentTokens.createProfile")}
+              </button>
+            </div>
+            {profiles !== null && profiles.length > 0 && (
+              <ul className="agenttokens-list agenttokens-profile-list">
+                {profiles.map((profile) => {
+                  const key = `${profile.owner_account}/${profile.handle}`;
+                  return (
+                    <li key={key} className="agenttokens-item">
+                      <div className="agenttokens-main">
+                        <strong className="agenttokens-name">{profile.handle}</strong>
+                        <span className="agenttokens-meta">
+                          {profile.runner} · {profile.base_branch} · {profile.worktree_strategy}
+                        </span>
+                      </div>
+                      <button type="button" className="d-btn" disabled={busyProfile === key} onClick={() => inviteProfile(profile)}>
+                        {busyProfile === key ? t("AgentTokens.invitingProfile") : t("AgentTokens.inviteProfile")}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </div>
       )}
     </div>

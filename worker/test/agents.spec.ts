@@ -213,3 +213,82 @@ describe("current-account channel agent inventory", () => {
     expect((await api(`/api/channels/${slug}/agents/${encodeURIComponent(body.name)}/rotate`, otherSession, { method: "POST" })).status).toBe(403);
   });
 });
+
+describe("project agent profiles", () => {
+  async function saveProfile(session: string, body: Record<string, unknown>): Promise<Response> {
+    return api("/api/agent-profiles", session, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("creates and lists reusable profiles only for the current account", async () => {
+    const owner = "owner@leeguoo.com";
+    const session = await humanSession(owner);
+    const otherSession = await humanSession("other@leeguoo.com");
+    const created = await saveProfile(session, {
+      handle: "herness-dev",
+      name: "Herness Dev",
+      runner: "codex-sdk",
+      repo_url: "git@github.com:leeguooooo/herness-use.git",
+      workdir: "/Users/leo/github.com/herness-use",
+      base_branch: "main",
+      worktree_strategy: "branch",
+      rules: "Report readiness before taking work.",
+      invitable_by: "owner",
+    });
+    expect(created.status).toBe(201);
+    const profile = (await created.json()) as { owner_account: string; handle: string; runner: string; token?: string };
+    expect(profile).toMatchObject({ owner_account: owner, handle: "herness-dev", runner: "codex-sdk" });
+    expect(profile).not.toHaveProperty("token");
+
+    const mine = (await (await api("/api/agent-profiles", session)).json()) as { profiles: { handle: string }[] };
+    expect(mine.profiles.map((p) => p.handle)).toContain("herness-dev");
+    const theirs = (await (await api("/api/agent-profiles", otherSession)).json()) as { profiles: { handle: string }[] };
+    expect(theirs.profiles).toHaveLength(0);
+  });
+
+  it("persists channel invites and enforces invitable_by", async () => {
+    const owner = "profile-owner@leeguoo.com";
+    const other = "other-inviter@leeguoo.com";
+    const ownerSession = await humanSession(owner);
+    const otherSession = await humanSession(other);
+    expect((await saveProfile(ownerSession, { handle: "builder", runner: "codex", invitable_by: "owner" })).status).toBe(201);
+    const slug = uniq("project-agent");
+    expect(
+      (
+        await api("/api/channels", otherSession, {
+          method: "POST",
+          body: JSON.stringify({ slug, kind: "standing", visibility: "private" }),
+        })
+      ).status,
+    ).toBe(201);
+
+    const denied = await api(`/api/channels/${slug}/project-agents`, otherSession, {
+      method: "POST",
+      body: JSON.stringify({ owner_account: owner, handle: "builder" }),
+    });
+    expect(denied.status).toBe(403);
+
+    expect((await saveProfile(ownerSession, { handle: "builder", runner: "codex", invitable_by: "anyone" })).status).toBe(201);
+    const invited = await api(`/api/channels/${slug}/project-agents`, otherSession, {
+      method: "POST",
+      body: JSON.stringify({ owner_account: owner, handle: "builder" }),
+    });
+    expect(invited.status).toBe(201);
+    const invite = (await invited.json()) as { channel_slug: string; owner_account: string; profile_handle: string; already_invited: boolean };
+    expect(invite).toMatchObject({ channel_slug: slug, owner_account: owner, profile_handle: "builder", already_invited: false });
+
+    const again = await api(`/api/channels/${slug}/project-agents`, otherSession, {
+      method: "POST",
+      body: JSON.stringify({ owner_account: owner, handle: "builder" }),
+    });
+    expect(again.status).toBe(200);
+    expect(((await again.json()) as { already_invited: boolean }).already_invited).toBe(true);
+
+    const inbox = (await (await api("/api/agent-profiles/invites", ownerSession)).json()) as {
+      invites: { channel_slug: string; profile: { handle: string } }[];
+    };
+    expect(inbox.invites).toContainEqual(expect.objectContaining({ channel_slug: slug, profile: expect.objectContaining({ handle: "builder" }) }));
+  });
+});

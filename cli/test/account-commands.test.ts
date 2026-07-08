@@ -10,6 +10,7 @@ import { run as agentRun } from "../src/commands/agent";
 import { run as spawnRun } from "../src/commands/spawn";
 import { run as whoamiRun } from "../src/commands/whoami";
 import { run as logoutRun } from "../src/commands/logout";
+import { run as channelRun } from "../src/commands/channel";
 import { startOidcMock, type OidcMock } from "./oidc-mock";
 
 let home: string;
@@ -193,6 +194,87 @@ describe("agent add", () => {
     const code = await agentRun(["add", "botty", "--channel-scope", "BAD_SLUG"]);
     expect(code).toBe(1);
     expect(mock.requests.find((r) => r.path === "/api/agents")).toBeUndefined();
+  });
+
+  test("creates a reusable project-agent profile with account bearer", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    const code = await agentRun([
+      "create",
+      "herness-dev",
+      "--runner",
+      "codex-sdk",
+      "--repo",
+      "git@github.com:leeguooooo/herness-use.git",
+      "--workdir",
+      "/Users/leo/github.com/herness-use",
+      "--base-branch",
+      "main",
+      "--worktree",
+      "branch",
+      "--rules",
+      "Report readiness.",
+      "--invitable-by",
+      "anyone",
+    ]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/agent-profiles" && r.method === "POST");
+    expect(req?.auth).toBe("Bearer acc-live");
+    expect(req?.body).toEqual({
+      handle: "herness-dev",
+      runner: "codex-sdk",
+      repo_url: "git@github.com:leeguooooo/herness-use.git",
+      workdir: "/Users/leo/github.com/herness-use",
+      base_branch: "main",
+      worktree_strategy: "branch",
+      rules: "Report readiness.",
+      invitable_by: "anyone",
+    });
+    expect(logs.join("\n")).toContain("fan@example.com/herness-dev");
+  });
+
+  test("lists project-agent profiles", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    expect(await agentRun(["create", "builder", "--runner", "codex"])).toBe(0);
+    logs = [];
+    const code = await agentRun(["list"]);
+    expect(code).toBe(0);
+    expect(mock.requests.some((r) => r.path === "/api/agent-profiles" && r.method === "GET")).toBe(true);
+    expect(logs.join("\n")).toContain("fan@example.com/builder");
+  });
+
+  test("rejects invalid project-agent profile flags before any request", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    expect(await agentRun(["create", "builder", "--runner", "bad"])).toBe(1);
+    expect(await agentRun(["create", "builder", "--runner", "codex", "--worktree", "bad"])).toBe(1);
+    expect(await agentRun(["create", "builder", "--runner", "codex", "--invitable-by", "org"])).toBe(1);
+    expect(mock.requests.find((r) => r.path === "/api/agent-profiles")).toBeUndefined();
+  });
+});
+
+describe("channel invite-agent", () => {
+  test("invites a reusable project-agent profile to the resolved channel", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_runtime" });
+    writeState({ channel: "ops", cursor: 0 });
+
+    const code = await channelRun(["invite-agent", "fan@example.com/herness-dev"]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/channels/ops/project-agents");
+    expect(req?.method).toBe("POST");
+    expect(req?.auth).toBe("Bearer ap_runtime");
+    expect(req?.body).toEqual({ owner_account: "fan@example.com", handle: "herness-dev" });
+    expect(logs.join("\n")).toContain("invited fan@example.com/herness-dev to ops");
+  });
+
+  test("rejects malformed profile refs before any request", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_runtime" });
+    writeState({ channel: "ops", cursor: 0 });
+    expect(await channelRun(["invite-agent", "bad-ref"])).toBe(1);
+    expect(mock.requests.find((r) => r.path.includes("/project-agents"))).toBeUndefined();
   });
 });
 
