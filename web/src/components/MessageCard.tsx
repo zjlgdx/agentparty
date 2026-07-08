@@ -4,6 +4,7 @@ import type { AgentContext, MsgFrame } from "@agentparty/shared";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
 import type { IdentityDisplayMap } from "../lib/identityDisplay";
+import { replaceMentionLabels } from "../lib/mentionMarkup";
 import { fmtTime } from "../lib/time";
 import { Markdown } from "./Markdown";
 
@@ -13,18 +14,8 @@ interface Props {
   identityDisplay?: IdentityDisplayMap;
 }
 
-const BODY_MENTION_RE = /(^|[^a-zA-Z0-9._@-])@([a-zA-Z0-9][a-zA-Z0-9._-]*)/g;
-
 function displayForIdentity(name: string, identities: IdentityDisplayMap | undefined): string {
   return identities?.[name]?.display ?? name;
-}
-
-function replaceMentionLabels(source: string, identities: IdentityDisplayMap | undefined): string {
-  if (identities === undefined) return source;
-  return source.replace(BODY_MENTION_RE, (full, prefix: string, name: string) => {
-    const display = identities[name]?.display;
-    return display === undefined || display === name ? full : `${prefix}@${display}`;
-  });
 }
 
 function contextBits(ctx: AgentContext | undefined): string[] {

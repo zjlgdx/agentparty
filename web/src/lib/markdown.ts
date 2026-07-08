@@ -29,8 +29,8 @@ const ALLOWED_TAGS = [
 ];
 const ALLOWED_ATTR = ["href", "title", "class", "start"];
 
-// class 只留 hljs 产物，防止消息正文借用应用自身样式（banner/d-card…）伪装系统 UI
-const HLJS_CLASS_RE = /^hljs(-[\w-]+)?$/;
+// class 只留 hljs 产物和受控 mention 产物，防止消息正文借用应用自身样式伪装系统 UI。
+const SAFE_CLASS_RE = /^(?:hljs(?:-[\w-]+)?|ap-mention)$/;
 
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   // 外链新窗口 + noopener（净化后统一补，用户写不进 target/rel）
@@ -41,7 +41,7 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.hasAttribute("class")) {
     const kept = (node.getAttribute("class") ?? "")
       .split(/\s+/)
-      .filter((c) => HLJS_CLASS_RE.test(c))
+      .filter((c) => SAFE_CLASS_RE.test(c))
       .join(" ");
     if (kept === "") node.removeAttribute("class");
     else node.setAttribute("class", kept);

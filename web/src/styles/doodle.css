@@ -162,6 +162,11 @@ body {
   overflow-wrap: anywhere;
 }
 .msg-body a { color: var(--d-blue); text-decoration-thickness: 2px; }
+.msg-body .ap-mention {
+  color: var(--t-accent);
+  font-weight: 700;
+  text-decoration: none;
+}
 .msg-body pre,
 .msg-body :not(pre) > code {
   font-family: var(--t-mono);
