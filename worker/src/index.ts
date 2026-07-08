@@ -399,12 +399,13 @@ function assignedRoleHeaders(role: CollaborationRole | null): Record<string, str
   return role === null ? {} : { "x-ap-collab-role": role, "x-ap-role-source": "assigned" };
 }
 
-// 人类 handle 头：account 非空且已设 handle 才带（权威值，供 do 盖 presence + stamp 消息，Task A6）。
+// 人类 handle 头：仅当身份是人类且已设 handle 才带（权威值，供 do 盖 presence + stamp 消息，Task A6/A7）。
+// agent 即使与 human 共享 account 也不继承其 handle——handle 是按 account 存的，但只对人类身份生效。
 // export 仅供 test 直接单测（do 尚不消费这个头，spec 里现有的"观察 do 副作用"手法在这没有可观察点）。
-export async function handleHeader(db: D1Database, account: string | null | undefined): Promise<Record<string, string>> {
-  if (account == null) return {};
+export async function handleHeader(db: D1Database, identity: TokenIdentity): Promise<Record<string, string>> {
+  if (identity.kind !== "human" || identity.account == null) return {};
   const row = await db.prepare("SELECT handle FROM account_profiles WHERE account = ?")
-    .bind(account).first<{ handle: string }>();
+    .bind(identity.account).first<{ handle: string }>();
   return row?.handle ? { "x-ap-handle": row.handle } : {};
 }
 
@@ -1704,6 +1705,7 @@ app.post("/api/channels/:slug/messages/:seq/review", async (c) => {
         ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
+        ...(await handleHeader(c.env.DB, identity)),
       },
     }),
   );
@@ -1744,6 +1746,7 @@ app.post("/api/channels/:slug/messages/:seq/:action", async (c) => {
         ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
+        ...(await handleHeader(c.env.DB, identity)),
       },
     }),
   );
@@ -1795,7 +1798,7 @@ app.post("/api/channels/:slug/messages", async (c) => {
         ...lineageHeaders(identity),
         ...assignedRoleHeaders(assignedRole),
         ...channelHeaders(channel, c.req.url),
-        ...(await handleHeader(c.env.DB, identity.account)),
+        ...(await handleHeader(c.env.DB, identity)),
       },
     }),
   );
@@ -2072,7 +2075,7 @@ app.get("/api/channels/:slug/ws", async (c) => {
   fwd.headers.set("x-ap-host", new URL(c.req.url).host);
   // 无条件写：未归档也显式置 "0"，堵住"客户端注入 1、未归档分支不覆盖"的透传
   fwd.headers.set("x-ap-archived", channel.archived_at !== null ? "1" : "0");
-  for (const [key, value] of Object.entries(await handleHeader(c.env.DB, identity.account))) fwd.headers.set(key, value);
+  for (const [key, value] of Object.entries(await handleHeader(c.env.DB, identity))) fwd.headers.set(key, value);
   const upgrade = await stub.fetch(fwd);
   const requestedProtocols = c.req
     .header("sec-websocket-protocol")

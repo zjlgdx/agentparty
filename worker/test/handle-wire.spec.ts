@@ -3,7 +3,7 @@
 // 不直接绕过 worker 给 do 发内部请求，因为权威 x-ap-handle 是 worker 层算出来再转发的（Task A6）。
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { api, createChannel, seedToken, uniq, WsClient } from "./helpers";
+import { api, createChannel, postMessage, seedToken, uniq, WsClient } from "./helpers";
 
 // 带自定义头做 ws 升级（同 ws-header-injection.spec.ts 的 openRaw），用于模拟客户端在升级请求里
 // 夹带伪造 x-ap-handle。worker 会先剥离所有客户端注入的 x-ap-* 头，再按账号的真实 handle（若有）
@@ -119,5 +119,101 @@ describe("do consumes x-ap-handle (Task A7)", () => {
     const sender = msg.sender as { handle?: string };
     expect(sender.handle).toBe(handle);
     ws.close();
+  });
+});
+
+// Task A7 review 发现的两个 Important 修复的回归证据：
+//  ① handleHeader 只按 account 查 D1、不看调用方 kind → human 和其自铸 agent 共享 account 时，
+//     agent 自己发的消息会被错误打上 human 的 handle（协议要求 agent 恒省略 handle）。
+//  ② review / edit|retract|supersede 两条转发路径漏调 handleHeader()，导致 supersede 新消息、
+//     reviewer 审核回复的 sender.handle 永远缺失，即使发送方/审核方账号已设置过真实 handle。
+describe("x-ap-handle review fixes (Task A7)", () => {
+  it("does not let an agent inherit the handle of the human it shares an account with", async () => {
+    const acct = uniq("shared-acct");
+    const human = await seedToken("human", uniq("h"), { owner: acct });
+    const handle = uniq("humanhandle");
+    await setHandle(human.token, handle);
+    // 自铸 agent：与 human 共享同一 account（典型场景——human 给自己铸的 agent token）
+    const agent = await seedToken("agent", uniq("a"), { owner: acct });
+    const slug = await createChannel(human.token);
+
+    const sent = await postMessage(slug, agent.token, "hi from agent");
+    expect(sent.status).toBe(200);
+    const seq = ((await sent.json()) as { seq: number }).seq;
+
+    const history = await api(`/api/channels/${slug}/messages`, human.token);
+    const messages = ((await history.json()) as {
+      messages: { seq: number; sender: { kind: string; handle?: string } }[];
+    }).messages;
+    const msg = messages.find((m) => m.seq === seq);
+    expect(msg?.sender.kind).toBe("agent");
+    expect(msg?.sender).not.toHaveProperty("handle");
+  });
+
+  it("forwards the actor's real handle onto the new message when superseding (edit|retract|supersede path)", async () => {
+    const acct = uniq("acct-supersede");
+    const human = await seedToken("human", uniq("h"), { owner: acct });
+    const handle = uniq("supersedehandle");
+    await setHandle(human.token, handle);
+    const slug = await createChannel(human.token);
+
+    const sent = await postMessage(slug, human.token, "old claim");
+    const seq = ((await sent.json()) as { seq: number }).seq;
+
+    const supersede = await api(`/api/channels/${slug}/messages/${seq}/supersede`, human.token, {
+      method: "POST",
+      body: JSON.stringify({ body: "new claim" }),
+    });
+    expect(supersede.status).toBe(200);
+    const body = (await supersede.json()) as { message: { sender: { handle?: string } } };
+    expect(body.message.sender.handle).toBe(handle);
+  });
+
+  it("forwards the reviewer's real handle onto the reviewer reply (review path)", async () => {
+    const acct = `${uniq("acct")}@leeguoo.com`;
+    const owner = await seedToken("agent", uniq("owner"), { owner: acct });
+    const slug = await createChannel(owner.token);
+    const writer = await seedToken("agent", uniq("writer"), { owner: acct, channelScope: slug });
+    const reviewerAcct = uniq("reviewer-acct");
+    const reviewer = await seedToken("human", uniq("reviewer"), { owner: reviewerAcct, channelScope: slug });
+    const handle = uniq("reviewerhandle");
+    await setHandle(reviewer.token, handle);
+
+    const gate = await api(`/api/channels/${slug}/completion-gate`, owner.token, {
+      method: "PUT",
+      body: JSON.stringify({ gate: "reviewer", policy: "sender" }),
+    });
+    expect(gate.status).toBe(200);
+
+    const kickoff = await postMessage(slug, writer.token, "please do the work");
+    const kickoffSeq = ((await kickoff.json()) as { seq: number }).seq;
+
+    const completion = await api(`/api/channels/${slug}/messages`, writer.token, {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "message",
+        body: "final synthesis",
+        mentions: [],
+        reply_to: kickoffSeq,
+        completion_artifact: {
+          kind: "final_synthesis",
+          kickoff_seq: kickoffSeq,
+          replies_count: 1,
+          timeout: false,
+          related_issues: [],
+          related_prs: [],
+        },
+      }),
+    });
+    expect(completion.status).toBe(200);
+    const completionSeq = ((await completion.json()) as { seq: number }).seq;
+
+    const approved = await api(`/api/channels/${slug}/messages/${completionSeq}/review`, reviewer.token, {
+      method: "POST",
+      body: JSON.stringify({ action: "approve" }),
+    });
+    expect(approved.status).toBe(200);
+    const body = (await approved.json()) as { reply: { sender: { handle?: string } } };
+    expect(body.reply.sender.handle).toBe(handle);
   });
 });

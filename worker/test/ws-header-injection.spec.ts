@@ -1,7 +1,13 @@
+import type { TokenIdentity } from "../src/auth";
 import { env, fetchMock, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { handleHeader } from "../src/index";
 import { api, createChannel, postMessage, seedToken, uniq } from "./helpers";
+
+// handleHeader 现在按 identity（含 kind）过滤（Task A7 修复 #2），单测传最小可用 identity。
+function humanIdentity(account: string | null | undefined): TokenIdentity {
+  return { name: "test", role: "human", kind: "human", hash: "test-hash", account: account ?? undefined };
+}
 
 beforeAll(() => {
   fetchMock.activate();
@@ -139,16 +145,21 @@ describe("x-ap-handle forwarding (Task A6)", () => {
     expect(put.status).toBe(200);
 
     // 真实 handle：与客户端可能伪造的 "evil" 无关，只看 D1
-    await expect(handleHeader(env.DB, owner)).resolves.toEqual({ "x-ap-handle": handle });
+    await expect(handleHeader(env.DB, humanIdentity(owner))).resolves.toEqual({ "x-ap-handle": handle });
 
     // 有账号但从未设置过 handle → 空对象（不会把伪造值当权威值透传）
     const ownerNoHandle = uniq("acct-nohandle");
     await seedToken("human", uniq("tok-human2"), { owner: ownerNoHandle });
-    await expect(handleHeader(env.DB, ownerNoHandle)).resolves.toEqual({});
+    await expect(handleHeader(env.DB, humanIdentity(ownerNoHandle))).resolves.toEqual({});
 
     // 无账号会话（legacy token / readonly）→ 空对象
-    await expect(handleHeader(env.DB, null)).resolves.toEqual({});
-    await expect(handleHeader(env.DB, undefined)).resolves.toEqual({});
+    await expect(handleHeader(env.DB, humanIdentity(null))).resolves.toEqual({});
+    await expect(handleHeader(env.DB, humanIdentity(undefined))).resolves.toEqual({});
+
+    // kind !== "human"（agent）→ 即使账号设了 handle 也不带（Task A7 修复 #2）
+    await expect(
+      handleHeader(env.DB, { ...humanIdentity(owner), kind: "agent" }),
+    ).resolves.toEqual({});
   });
 
   it("ws upgrade still succeeds when a client sends a forged x-ap-handle header", async () => {
