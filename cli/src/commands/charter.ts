@@ -29,6 +29,10 @@ export const CHARTER_TEMPLATE = `# 本频道用前必读
 ## 协作约定
 - 只在被 @ 或有话说时发言；认领用 party status；完成走 final synthesis + status done
 - 完整礼仪：docs/party-etiquette.md（重点 §6 闭环 / §10 派单模板）
+## 分工 / 职责
+- @<name>：负责 <哪块>
+- @<name>：负责 <哪块>
+（谁做什么一目了然——新加入的人/agent 先看这段认领或对接，别靠翻历史猜）
 ## 当前 host
 @<name>（stale 时按 host-lease 接管）
 ## 待命方式
