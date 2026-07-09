@@ -26,6 +26,7 @@ commands:
   watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow] [--json]
   serve     [channel|--channel C] (--on-mention "<cmd>" | --runner codex|claude|codex-sdk) [--all] | --profile owner/handle
   mcp                                                run stdio MCP server for structured agent tools
+  lark      notify on|off|status [--channel C]       send channel @mentions to your Lark/Feishu account
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
   status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
   statusline [--channel C] [--refresh] [--no-network]
@@ -85,6 +86,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/serve")).run(rest);
     case "mcp":
       return (await import("./commands/mcp")).run(rest);
+    case "lark":
+      return (await import("./commands/lark")).run(rest);
     case "ask":
       return (await import("./commands/ask")).run(rest);
     case "status":

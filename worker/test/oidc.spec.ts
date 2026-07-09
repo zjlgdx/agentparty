@@ -156,7 +156,18 @@ describe("oidc end-to-end via SELF.fetch", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       oidc: { issuer: CONFIGURED_ISSUER, client_id: CLIENT_ID },
-      auth: { providers: [] },
+      auth: {
+        providers: [
+          {
+            id: "lark-main",
+            kind: "lark",
+            label: "Sign in with Lark",
+            client_id: "cli_test_lark",
+            authorize_url: "https://accounts.larksuite.com/open-apis/authen/v1/authorize",
+            scope: "",
+          },
+        ],
+      },
       cli_client_id: "agentparty-cli",
     });
   });

@@ -28,6 +28,15 @@ import {
 } from "./auth";
 import { ChannelDO } from "./do";
 import { handleConflict, validateHandleFormat } from "./handle";
+import {
+  buildMentionCard,
+  inferReceiveIdType,
+  resolveLarkProvider,
+  sendLarkCard,
+  verifyWebhookSignature,
+  type LarkReceiveIdType,
+  type LarkWebhookPayload,
+} from "./integrations/lark";
 import { openapiDocument } from "./openapi";
 
 export { ChannelDO };
@@ -206,6 +215,19 @@ interface AccountProfileMetadata {
   provider: string;
   providerUserId: string;
   tenantKey: string | null;
+}
+
+interface LarkNotifySubscriptionRow {
+  channel_slug: string;
+  account: string;
+  target_name: string;
+  provider_id: string;
+  provider_kind: string;
+  receive_id: string;
+  receive_id_type: LarkReceiveIdType;
+  secret: string;
+  created_at: number;
+  updated_at: number;
 }
 
 const PROVIDER_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -1132,6 +1154,47 @@ app.post("/api/auth/:provider/callback", async (c) => {
   });
 });
 
+// DO webhook relay: channel mention -> personal Lark/Feishu card.
+// Auth is the per-subscription webhook secret, then the DO HMAC signature over the raw body.
+app.post("/api/integrations/lark/relay", async (c) => {
+  const bearer = extractBearer(c.req.raw);
+  if (!bearer) return c.json(errorBody("unauthorized", "missing webhook bearer secret"), 401);
+  const sub = await c.env.DB.prepare(
+    `SELECT channel_slug, account, target_name, provider_id, provider_kind,
+            receive_id, receive_id_type, secret, created_at, updated_at
+       FROM lark_notify_subscriptions
+      WHERE secret = ?`,
+  )
+    .bind(bearer.token)
+    .first<LarkNotifySubscriptionRow>();
+  if (!sub) return c.json(errorBody("not_found", "lark notification subscription not found"), 404);
+
+  const rawBody = await c.req.text();
+  const signed = await verifyWebhookSignature(sub.secret, rawBody, c.req.header("x-agentparty-signature"));
+  if (!signed) return c.json(errorBody("unauthorized", "invalid webhook signature"), 401);
+
+  let payload: LarkWebhookPayload;
+  try {
+    payload = JSON.parse(rawBody) as LarkWebhookPayload;
+  } catch {
+    return c.json(errorBody("bad_request", "invalid webhook payload"), 400);
+  }
+  if (payload.channel !== sub.channel_slug || !Array.isArray(payload.mentions) || !payload.mentions.includes(sub.target_name)) {
+    return c.json(errorBody("bad_request", "webhook payload does not match subscription"), 400);
+  }
+  const provider = resolveLarkProvider(c.env, sub.provider_id);
+  if (!provider || provider.id !== sub.provider_id || provider.kind !== sub.provider_kind) {
+    return c.json(errorBody("unavailable", "lark provider is not configured"), 503);
+  }
+  try {
+    await sendLarkCard(c.env, provider, sub.receive_id, sub.receive_id_type, buildMentionCard(payload));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "lark delivery failed";
+    return c.json(errorBody("unavailable", message), 502);
+  }
+  return c.json({ ok: true });
+});
+
 // 当前登录身份：web topbar 显示 "signed in as <email 或 name>"（spec §10）
 app.get("/api/me", requireBearer, async (c) => {
   const id = c.get("identity");
@@ -1759,6 +1822,167 @@ app.delete("/api/tokens/:name", requireAdmin, async (c) => {
 app.use("/api/channels", requireBearer);
 app.use("/api/channels/*", requireBearer);
 app.use("/api/join/*", requireBearer);
+
+app.get("/api/channels/:slug/lark-notify", async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "lark notifications require a human account session"), 403);
+  }
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const row = await c.env.DB.prepare(
+    `SELECT target_name, provider_id, provider_kind, created_at, updated_at
+       FROM lark_notify_subscriptions
+      WHERE channel_slug = ? AND account = ?`,
+  )
+    .bind(slug, identity.account)
+    .first<{ target_name: string; provider_id: string; provider_kind: string; created_at: number; updated_at: number }>();
+  return c.json({
+    enabled: row !== null,
+    channel_slug: slug,
+    ...(row === null
+      ? {}
+      : {
+          target_name: row.target_name,
+          provider_id: row.provider_id,
+          provider_kind: row.provider_kind,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        }),
+  });
+});
+
+app.post("/api/channels/:slug/lark-notify", async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "lark notifications require a human account session"), 403);
+  }
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  if (channel.archived_at !== null) {
+    return c.json(errorBody("archived", "channel is archived"), 410);
+  }
+  const profile = await c.env.DB.prepare(
+    `SELECT handle, provider, provider_user_id
+       FROM account_profiles
+      WHERE account = ?`,
+  )
+    .bind(identity.account)
+    .first<{ handle: string | null; provider: string | null; provider_user_id: string | null }>();
+  if (!profile?.handle || !NAME_RE.test(profile.handle)) {
+    return c.json(errorBody("forbidden", "set a profile handle before enabling lark notifications"), 403);
+  }
+  if (!profile.provider || !profile.provider_user_id) {
+    return c.json(errorBody("forbidden", "sign in with Lark or Feishu before enabling notifications"), 403);
+  }
+  const provider = resolveLarkProvider(c.env, profile.provider);
+  if (!provider || provider.id !== profile.provider) {
+    return c.json(errorBody("unavailable", "lark provider is not configured"), 503);
+  }
+  const existing = await c.env.DB.prepare(
+    "SELECT target_name FROM lark_notify_subscriptions WHERE channel_slug = ? AND account = ?",
+  )
+    .bind(slug, identity.account)
+    .first<{ target_name: string }>();
+  if (existing) {
+    await fetchChannelDO(
+      c.env,
+      slug,
+      new Request(`https://do/internal/webhooks?name=${encodeURIComponent(existing.target_name)}`, {
+        method: "DELETE",
+        headers: { "x-partykit-room": slug },
+      }),
+    ).catch(() => null);
+  }
+  const secret = randomToken();
+  const relayUrl = new URL(c.req.url);
+  relayUrl.pathname = "/api/integrations/lark/relay";
+  relayUrl.search = "";
+  const doRes = await fetchChannelDO(
+    c.env,
+    slug,
+    new Request("https://do/internal/webhooks", {
+      method: "POST",
+      body: JSON.stringify({
+        name: profile.handle,
+        url: relayUrl.toString().replace(/^http:/, "https:"),
+        secret,
+        filter: "mentions",
+      }),
+      headers: { "content-type": "application/json", "x-partykit-room": slug },
+    }),
+  );
+  if (!doRes.ok) return doRes;
+  const now = Date.now();
+  await c.env.DB.prepare(
+    `INSERT INTO lark_notify_subscriptions (
+       channel_slug, account, target_name, provider_id, provider_kind,
+       receive_id, receive_id_type, secret, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(channel_slug, account) DO UPDATE SET
+       target_name = excluded.target_name,
+       provider_id = excluded.provider_id,
+       provider_kind = excluded.provider_kind,
+       receive_id = excluded.receive_id,
+       receive_id_type = excluded.receive_id_type,
+       secret = excluded.secret,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      slug,
+      identity.account,
+      profile.handle,
+      provider.id,
+      provider.kind,
+      profile.provider_user_id,
+      inferReceiveIdType(profile.provider_user_id),
+      secret,
+      existing ? now : now,
+      now,
+    )
+    .run();
+  return c.json({ enabled: true, channel_slug: slug, target_name: profile.handle, provider_id: provider.id }, 201);
+});
+
+app.delete("/api/channels/:slug/lark-notify", async (c) => {
+  const identity = c.get("identity");
+  if (identity.role !== "human" || identity.account == null) {
+    return c.json(errorBody("forbidden", "lark notifications require a human account session"), 403);
+  }
+  const slug = c.req.param("slug");
+  const channel = await loadChannel(c.env.DB, slug);
+  if (!channel) return c.json(errorBody("not_found", "channel not found"), 404);
+  if (!(await canAccessLoadedChannel(c.env.DB, identity, channel))) {
+    return c.json(errorBody("forbidden", "not allowed in this channel"), 403);
+  }
+  const sub = await c.env.DB.prepare(
+    "SELECT target_name FROM lark_notify_subscriptions WHERE channel_slug = ? AND account = ?",
+  )
+    .bind(slug, identity.account)
+    .first<{ target_name: string }>();
+  if (sub) {
+    await fetchChannelDO(
+      c.env,
+      slug,
+      new Request(`https://do/internal/webhooks?name=${encodeURIComponent(sub.target_name)}`, {
+        method: "DELETE",
+        headers: { "x-partykit-room": slug },
+      }),
+    ).catch(() => null);
+    await c.env.DB.prepare("DELETE FROM lark_notify_subscriptions WHERE channel_slug = ? AND account = ?")
+      .bind(slug, identity.account)
+      .run();
+  }
+  return c.json({ enabled: false, channel_slug: slug });
+});
 
 // 频道列表默认只读 D1，避免每次列表刷新都按频道数 fan-out 到所有 ChannelDO。
 // 调试/兼容场景可显式带 ?summary=1 拉「最近一条消息 + 参与者状态点」。

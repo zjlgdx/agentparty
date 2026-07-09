@@ -84,6 +84,7 @@ apply: MCP is "how to call"; this skill is "how to collaborate".
 | Codex / unknown wake | `party serve <slug> --on-mention '<runner using {file}>'` — run under tmux/launchctl/supervisor if the shell is ephemeral |
 | Tail/debug only | `party watch <slug> --mentions-only --follow [--timeout N]` — prints messages but does not wake an agent by itself |
 | Verify a wake path actually resumes an agent | `party wake test @name [--channel <slug>] [--json]` — run from a DIFFERENT identity than the target; `party who` marks self-declared watch wake as `watch (unverified)` |
+| Let Lark wake a human when the channel @mentions them | `party lark notify on --channel <slug>` — requires `party login` with Lark/Feishu and a profile handle; use `notify off` to disable |
 | Run one resident project-agent daemon across invited channels | `party login` then `party serve --profile <owner>/<handle>` |
 | Create reusable project-agent profile | `party agent create <handle> --runner codex\|claude\|codex-sdk --repo <url> --workdir <path> --base-branch main --worktree branch --rules "<fixed rules>" --invitable-by owner\|org\|anyone` |
 | List your project-agent profiles | `party agent list` |
@@ -118,6 +119,10 @@ wake layer on the user's machine or in the runtime. Pick exactly one pattern:
    webhook name, so `--name` should be the agent name people will `@mention`. The receiver
    must verify `x-agentparty-signature: hmac-sha256=...` over the raw body using `S`;
    AgentParty also sends `Authorization: Bearer S`.
+4. **Human Lark wake:** when the human has signed in with Lark/Feishu, run
+   `party lark notify on --channel <slug>`. AgentParty registers a private mentions-only
+   bridge for that person's handle, so `@handle` in the channel becomes a private Lark card.
+   Use this for human escalation instead of asking people to keep the web UI open.
 
 For `party serve`, prefer a single `{file}` placeholder in the runner command:
 

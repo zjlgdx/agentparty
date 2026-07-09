@@ -44,7 +44,7 @@ nav ol { columns: 2; font-size: .92rem; }
   <div class="meta">
     <span>Issue: <a href="https://github.com/leeguooooo/agentparty/issues/62">#62</a></span>
     <span>日期: 2026-07-09</span>
-    <span>状态: 设计定稿,待实现</span>
+    <span>状态: M1 已实现,M2/M3 待做</span>
     <span>目标读者: 第一次接触本仓库的开发者</span>
   </div>
 </header>
@@ -159,7 +159,7 @@ CREATE TABLE lark_event_dedup (
 <tr><td><code>sendLarkCard</code></td><td><code>(env, provider, receiveId, idType, card) =&gt; Promise&lt;{ok, error?}&gt;</code></td><td>POST <code>/open-apis/im/v1/messages?receive_id_type=&lt;idType&gt;</code>,body <code>{receive_id, msg_type:"interactive", content: JSON.stringify(card)}</code>;非 0 code 返回 <code>{ok:false, error:msg}</code>,<strong>不 throw</strong>(让 relay 决定返回 5xx 触发 webhook 重试)</td></tr>
 <tr><td><code>buildMentionCard</code></td><td><code>(payload: MsgFrame &amp; {channel, permalink}) =&gt; object</code></td><td>卡片:标题 <code>#&lt;channel&gt; 有人 @你</code>;正文 <code>**&lt;sender.name&gt;**: &lt;body 截 500 字&gt;</code>;按钮"打开频道"链到 <code>permalink</code>;纯函数,单测好写</td></tr>
 <tr><td><code>verifyWebhookSignature</code></td><td><code>(secret, rawBody, header) =&gt; Promise&lt;boolean&gt;</code></td><td>与 DO 端 <code>hmacSha256Hex</code> 相同算法(SHA-256 HMAC hex),比对 <code>x-agentparty-signature</code> 的 <code>hmac-sha256=</code> 后缀;用 <code>crypto.subtle.timingSafeEqual</code> 风格比较</td></tr>
-<tr><td><code>resolveLarkProvider</code></td><td><code>(env) =&gt; provider | null</code></td><td>从 <code>parseAuthProviders(env)</code> 里挑第一个 kind 为 lark/feishu 的;null 时所有集成路由返回 404("lark provider not configured")——prod 天然关闭</td></tr>
+<tr><td><code>resolveLarkProvider</code></td><td><code>(env, preferredId?) =&gt; provider | null</code></td><td>从 <code>AUTH_PROVIDERS</code> 里挑指定 provider 或第一个 lark/feishu;null 时集成路由返回 provider 未配置,prod 天然关闭</td></tr>
 </table>
 
 <h3>5.3 新路由(挂在 <code>worker/src/index.ts</code>)</h3>
@@ -168,16 +168,16 @@ CREATE TABLE lark_event_dedup (
 <tr><td><code>POST /api/channels/:slug/lark-notify</code></td><td><code>requireBearer</code>;调用者是 human 账号会话、是本频道成员、<code>account_profiles</code> 里有 handle 且 <code>provider_user_id</code> 或 email 非空</td><td>生成 secret → 向 DO <code>/internal/webhooks</code> POST <code>{name: handle, url: "https://&lt;host&gt;/api/integrations/lark/relay", secret, filter: "mentions"}</code> → 写 <code>lark_notify_subscriptions</code>。已存在则先删后建(幂等)。host 取 <code>new URL(c.req.url).host</code></td></tr>
 <tr><td><code>DELETE /api/channels/:slug/lark-notify</code></td><td>同上</td><td>删 DO webhook(按 target_name)+ 删订阅行</td></tr>
 <tr><td><code>GET /api/channels/:slug/lark-notify</code></td><td>同上</td><td>返回 <code>{enabled: boolean}</code>,web 开关回显用</td></tr>
-<tr><td><code>POST /api/integrations/lark/relay</code></td><td><strong>不走 requireBearer</strong>(调用方是 DO 自己):取 <code>authorization: Bearer &lt;secret&gt;</code> → 查 <code>lark_notify_subscriptions WHERE secret=?</code> → 无此行 404;再 <code>verifyWebhookSignature</code> 校验原文 → 失败 401</td><td>解析 payload → 查 <code>account_profiles</code> 拿 union_id/email → <code>buildMentionCard</code> → <code>sendLarkCard</code>。Lark 侧失败返回 502(<strong>故意非 2xx</strong>,让 DO 的 webhook_queue 接管重试);成功 200</td></tr>
+<tr><td><code>POST /api/integrations/lark/relay</code></td><td><strong>不走 requireBearer</strong>(调用方是 DO 自己):取 <code>authorization: Bearer &lt;secret&gt;</code> → 查 <code>lark_notify_subscriptions WHERE secret=?</code> → 无此行 404;再 <code>verifyWebhookSignature</code> 校验原文 → 失败 401</td><td>解析 payload → 用订阅行里的 receive_id/provider → <code>buildMentionCard</code> → <code>sendLarkCard</code>。Lark 侧失败返回 502(<strong>故意非 2xx</strong>,让 DO 的 webhook_queue 接管重试);成功 200</td></tr>
 </table>
 <aside><strong>注意自指 URL 的 SSRF 白名单</strong>:webhook 注册校验里有 <code>isBlockedWebhookHost</code>(挡私网 IP)。relay 的 host 是公网自定义域名,不会被挡;但本地 <code>wrangler dev</code> 时 host 是 localhost——单测直接调 relay handler,不走真投递,不受影响。</aside>
 
 <h3>5.4 CLI(新文件 <code>cli/src/commands/lark.ts</code>)</h3>
-<pre><code>usage: party lark &lt;subcommand&gt;
-  notify on  [--channel C]   在频道开启"@我 → Lark 私聊"(默认当前绑定频道)
-  notify off [--channel C]   关闭
-  status                     列出自己开了通知的频道</code></pre>
-<p>实现:三个子命令分别调上面三个 REST 口;REST 调用函数加在 <code>cli/src/rest.ts</code>(照抄相邻函数的错误处理风格);在 <code>cli/src/index.ts</code> 注册 <code>lark</code> 命令 + <code>--help</code> 冒烟测试加进 <code>cli/test/cli.test.ts</code> 的命令清单里。</p>
+<pre><code>usage: party lark notify on [--channel C]
+       party lark notify off [--channel C]
+       party lark notify status [--channel C]
+       party lark status [--channel C]</code></pre>
+<p>实现:三个动作分别调上面三个 REST 口;REST 调用函数加在 <code>cli/src/rest.ts</code>;在 <code>cli/src/index.ts</code> 注册 <code>lark</code> 命令 + <code>--help</code> 冒烟测试加进 <code>cli/test/cli.test.ts</code> 的命令清单里。</p>
 
 <h3>5.5 Web(可选增量,一个组件)</h3>
 <p><code>web/src/components/NotifyToggle.tsx</code>(浏览器通知铃铛)旁边加一个 Lark 开关,仅当 <code>/api/me</code> 返回的 <code>provider</code> 是 lark/feishu 时显示;调 GET/POST/DELETE lark-notify。不做也不影响 M1 验收(CLI 已可用)。</p>
@@ -244,9 +244,9 @@ CREATE TABLE lark_event_dedup (
 <table>
 <tr><th>文件</th><th>新增/修改</th><th>内容</th><th>里程碑</th></tr>
 <tr><td><code>worker/migrations/0017_lark_integration.sql</code></td><td>新增</td><td>三张表(§5.1)</td><td>M1</td></tr>
-<tr><td><code>worker/src/integrations/lark.ts</code></td><td>新增</td><td>§5.2 全部函数 + M2 的解密/握手/事件处理</td><td>M1/M2</td></tr>
-<tr><td><code>worker/src/index.ts</code></td><td>修改</td><td>挂 §5.3 四条路由 + M2 events 路由;抽 <code>postMessageAsIdentity</code>;<code>run_worker_first</code> 已含 <code>/api/*</code> 无需动</td><td>M1/M2</td></tr>
-<tr><td><code>worker/test/lark.test.ts</code></td><td>新增</td><td>§9 用例</td><td>M1/M2</td></tr>
+<tr><td><code>worker/src/integrations/lark.ts</code></td><td>新增</td><td>§5.2 M1 函数;M2 的解密/握手/事件处理待补</td><td>M1/M2</td></tr>
+<tr><td><code>worker/src/index.ts</code></td><td>修改</td><td>挂 §5.3 四条 M1 路由;M2 events 路由待补;<code>run_worker_first</code> 已含 <code>/api/*</code> 无需动</td><td>M1/M2</td></tr>
+<tr><td><code>worker/test/lark.spec.ts</code></td><td>新增</td><td>§9 M1 用例</td><td>M1</td></tr>
 <tr><td><code>cli/src/commands/lark.ts</code> + <code>cli/src/rest.ts</code> + <code>cli/src/index.ts</code></td><td>新增/修改</td><td>party lark 子命令</td><td>M1</td></tr>
 <tr><td><code>cli/test/cli.test.ts</code></td><td>修改</td><td>lark --help 冒烟进命令清单</td><td>M1</td></tr>
 <tr><td><code>web/src/components/NotifyToggle.tsx</code>(或旁边新组件)</td><td>修改</td><td>Lark 开关(可选)</td><td>M1.5</td></tr>
@@ -256,7 +256,7 @@ CREATE TABLE lark_event_dedup (
 <h2 id="test">9. 测试计划</h2>
 <table>
 <tr><th>层</th><th>用例</th></tr>
-<tr><td>worker vitest(mock fetch)</td><td>relay:错签名→401 / 未知 secret→404 / 正常→构造出正确的 im/v1/messages 请求 / Lark 返回非 0 code→relay 回 502;<br>token 缓存:两次调用只发一次 token 请求,过期后重取;<br>buildMentionCard:截断、permalink、@名单;<br>events:challenge 握手回显 / 错 token→401 / dedup 重复事件不二次处理 / bind 权限拒绝 / 桥接消息 kind=human;<br>lark-notify 路由:非成员 403 / 无 Lark 绑定 400 / 幂等重复开启</td></tr>
+<tr><td>worker vitest(mock fetch)</td><td>M1 已覆盖:relay 错签名→401 / 未知 secret→404 / 正常→构造出正确的 im/v1/messages 请求 / Lark 返回非 0 code→relay 回 502;签名纯函数;buildMentionCard;receive_id_type 推断;lark-notify 路由仅 human 可开、开启写 DO webhook、关闭删除。<br>M2 待补:challenge 握手回显 / 错 token→401 / dedup 重复事件不二次处理 / bind 权限拒绝 / 桥接消息 kind=human。</td></tr>
 <tr><td>手动(xdream)</td><td>§5.6 与 §6.5 的验收清单;Lark 后台"事件订阅→测试事件"可以直接给 events 端点发模拟事件</td></tr>
 <tr><td>回归</td><td><code>bun run check</code>(cli 测试 + tsc + web build + worker vitest)</td></tr>
 </table>

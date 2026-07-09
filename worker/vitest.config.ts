@@ -29,6 +29,10 @@ export default defineWorkersConfig(async () => {
               // 静态启用 OIDC，供 e2e 走 SELF.fetch 验证人类网页登录（未配 OIDC 的降级路径由单元测试覆盖）
               OIDC_ISSUER: "https://oidc.test",
               OIDC_CLIENT_ID: "ap-web",
+              AUTH_PROVIDERS: JSON.stringify([
+                { id: "lark-main", kind: "lark", client_id: "cli_test_lark" },
+              ]),
+              LARK_CLIENT_SECRET: "test-lark-secret",
             },
           },
         },

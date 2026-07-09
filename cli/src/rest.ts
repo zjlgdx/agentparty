@@ -66,6 +66,16 @@ export interface WebhookInfo {
   filter: WebhookFilter;
 }
 
+export interface LarkNotifyStatus {
+  enabled: boolean;
+  channel_slug: string;
+  target_name?: string;
+  provider_id?: string;
+  provider_kind?: string;
+  created_at?: number;
+  updated_at?: number;
+}
+
 export type ChannelRoleInfo = ChannelRoleAssignment;
 
 export interface ChannelMemberInfo {
@@ -467,6 +477,38 @@ export async function listWebhooks(
   if (Array.isArray(body)) return body as WebhookInfo[];
   const webhooks = (body as Record<string, unknown> | null)?.webhooks;
   return Array.isArray(webhooks) ? (webhooks as WebhookInfo[]) : [];
+}
+
+export async function getLarkNotifyStatus(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
+}
+
+export async function enableLarkNotify(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    method: "POST",
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
+}
+
+export async function disableLarkNotify(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    method: "DELETE",
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
 }
 
 export async function fetchMessages(
