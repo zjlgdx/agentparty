@@ -134,13 +134,21 @@
 .handlesetup-trigger {
   font-size: 11px;
   padding: 2px 8px;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: min(240px, 24vw);
   gap: 4px;
   color: var(--t-muted);
   background: var(--t-panel2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 前缀常驻不截断，只有值超长时才省略 */
+.handlesetup-trigger-label {
+  flex: none;
+}
+.handlesetup-trigger-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* 已设昵称态：静态就要看出"可点/可改"，不必等 hover 才靠 title 提示 */
 .handlesetup-trigger:hover,
@@ -646,10 +654,10 @@
 
 /* ---- presence 条 ---- */
 .presence-bar {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
   padding: 4px 4px 8px;
   flex: none;
 }
@@ -657,6 +665,16 @@
 .presence-bar--collapsed {
   padding-bottom: 4px;
 }
+/* 第一行：属性/告警 + 右侧连接状态 */
+.presence-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.presence-head .conn {
+  margin-left: auto;
+} /* ● live 推到第一行最右 */
 .presence-meta,
 .presence-strip {
   display: flex;
@@ -820,6 +838,7 @@
 .presence-toggle {
   display: inline-flex;
   align-items: center;
+  align-self: flex-start; /* 独立一行，宽度贴合内容、左对齐 */
   gap: 5px;
   flex: none;
   padding: 2px 8px 3px;
@@ -830,6 +849,12 @@
   font: inherit;
   cursor: pointer;
   transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.presence-toggle::before {
+  content: "❯";
+  color: var(--t-faint);
+  font-size: 11px;
+  margin-right: 1px;
 }
 .presence-toggle:hover {
   border-color: var(--d-ink);
@@ -1115,9 +1140,7 @@
   font-size: 11px;
   color: var(--t-dim);
   white-space: nowrap;
-  /* presence-strip 折叠时中间列少了 chip，conn 会落进那个 1fr 空列——
-     强制贴右边，不然折叠态看着像挤在中间。 */
-  justify-self: end;
+  /* 贴第一行最右靠 .presence-head .conn 的 margin-left:auto（flex 化后 justify-self 已失效） */
 }
 .conn[data-s="open"] { color: var(--d-green); }
 .conn[data-s="reconnecting"] { color: var(--d-red); }
@@ -3325,6 +3348,9 @@
     max-width: 78px;
     font-size: 10px;
   }
+  /* 窄屏空间紧：藏掉 "Nickname:" 前缀，只留 ✎ 图标 + 昵称值本身（值才是要看的），
+     否则前缀(flex:none)吃光 78px 会把值挤成 0 宽度、整个昵称看不见。 */
+  .handlesetup-trigger-label { display: none; }
   .handle-banner {
     margin: 0 10px 8px;
   }
@@ -3365,7 +3391,6 @@
   .presence-bar {
     min-width: 0;
     max-width: 100%;
-    grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px;
     padding: 0 2px 2px;
   }
@@ -3375,7 +3400,6 @@
     gap: 5px;
   }
   .presence-strip {
-    grid-column: 1 / -1;
     flex-wrap: wrap;
     max-height: 76px;
     overflow-x: hidden;
