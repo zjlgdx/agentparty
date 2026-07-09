@@ -21,6 +21,7 @@ import type {
   WebhookFilter,
 } from "@agentparty/shared";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { canAccessChannel, isChannelModerator } from "./acl";
 import {
@@ -49,6 +50,7 @@ export { ChannelDO };
 // OIDC_ISSUER + OIDC_CLIENT_ID 为可选 vars/secrets：都配齐才启用人类网页 OIDC 登录（spec §10）。
 // AUTH_PROVIDERS 是新版可扩展 OAuth 配置，Lark/Feishu 走 worker 服务端换码，secret 不下发给浏览器。
 type AppEnv = Env & {
+  ASSETS: Fetcher;
   ADMIN_SECRET?: string;
   OIDC_ISSUER?: string;
   OIDC_CLIENT_ID?: string;
@@ -1509,6 +1511,20 @@ function isBlockedWebhookHost(rawHost: string): boolean {
 
 const app = new Hono<AppContext>();
 const DESKTOP_CORS_ORIGINS = new Set(["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]);
+
+function docsAsset(c: Context<AppContext>, path: string): Promise<Response> {
+  const url = new URL(c.req.url);
+  url.pathname = path;
+  url.search = "";
+  return c.env.ASSETS.fetch(new Request(url.toString(), { method: "GET", headers: c.req.raw.headers }));
+}
+
+app.get("/docs", (c) => docsAsset(c, "/docs/index.html"));
+app.get("/docs/", (c) => docsAsset(c, "/docs/index.html"));
+app.get("/docs/statusline", (c) => docsAsset(c, "/docs/statusline/index.html"));
+app.get("/docs/statusline/", (c) => docsAsset(c, "/docs/statusline/index.html"));
+app.get("/docs/spec", (c) => docsAsset(c, "/docs/spec/index.html"));
+app.get("/docs/spec/", (c) => docsAsset(c, "/docs/spec/index.html"));
 
 app.use("/api/*", async (c, next) => {
   const origin = c.req.header("origin") ?? "";
