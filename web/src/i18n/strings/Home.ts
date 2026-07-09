@@ -2,8 +2,8 @@ import { registerDict, type LocaleDict } from "../dict";
 
 export const HomeStrings: LocaleDict = {
   en: {
-    "Home.archivedToggle": "Archived ({count})",
-    "Home.channelsLabel": "# channels",
+    "Home.archivedToggle": "$ ls ./archived/ · {count}",
+    "Home.channelsLabel": "$ ls ./channels/",
     "Home.noParticipants": "no participants yet",
     "Home.loading": "loading…",
     "Home.channelCategoryAll": "All ({count})",
@@ -13,8 +13,8 @@ export const HomeStrings: LocaleDict = {
     "Home.channelCategoryEmptyJoined": "You haven't joined any channels yet.",
   },
   zh: {
-    "Home.archivedToggle": "已归档 ({count})",
-    "Home.channelsLabel": "# 频道",
+    "Home.archivedToggle": "$ ls ./archived/ · {count}",
+    "Home.channelsLabel": "$ ls ./channels/",
     "Home.noParticipants": "尚无参与者",
     "Home.loading": "加载中…",
     "Home.channelCategoryAll": "全部 ({count})",

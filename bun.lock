@@ -7,7 +7,7 @@
     },
     "cli": {
       "name": "@agentparty/cli",
-      "version": "0.2.75",
+      "version": "0.2.76",
       "bin": {
         "party": "src/index.ts",
       },
@@ -37,8 +37,6 @@
       "dependencies": {
         "@agentparty/shared": "workspace:*",
         "@fontsource/jetbrains-mono": "^5.2.5",
-        "@fontsource/permanent-marker": "^5.2.5",
-        "@fontsource/zcool-kuaile": "^5.2.5",
         "dompurify": "^3.2.6",
         "highlight.js": "^11.11.1",
         "marked": "^15.0.12",
@@ -194,10 +192,6 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A=="],
 
     "@fontsource/jetbrains-mono": ["@fontsource/jetbrains-mono@5.2.8", "", {}, "sha512-6w8/SG4kqvIMu7xd7wt6x3idn1Qux3p9N62s6G3rfldOUYHpWcc2FKrqf+Vo44jRvqWj2oAtTHrZXEP23oSKwQ=="],
-
-    "@fontsource/permanent-marker": ["@fontsource/permanent-marker@5.2.7", "", {}, "sha512-Lpjv3yD6TSRvcxjhdv4OZuNtEttbUgVNfFqAE8Qf7D1J8L97qZTZ8rj8OExX2ezCNv920psv+HBHvthAQxNE+A=="],
-
-    "@fontsource/zcool-kuaile": ["@fontsource/zcool-kuaile@5.2.8", "", {}, "sha512-pIeFNRM0rwrJkO+TP7WG+KXvqy0YFRrPecNNzHTNOQLYhxrqN67/wzyx3fH+Ky63Y/Am5heB5XIzsEx/Io+P4w=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.14", "", { "peerDependencies": { "hono": "^4" } }, "sha512-GwtvgtXxnWsucXvbQXkRgqksiH2Qed37H9xHZocE5sA3N8O8O8/8FA3uclQXxXVzc9XBZuEOMK7+r02FmSpHtw=="],
 

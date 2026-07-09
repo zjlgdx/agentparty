@@ -1,28 +1,31 @@
 /* ============================================================================
-   AgentParty design tokens — 精简自 blog terminal-shell.css 的 --t-* 约定。
-   默认主题即 doodle（纸白 + 墨线 + 蜡笔），保留 data-theme 切回 midnight 终端风。
+   AgentParty design tokens — 博客风（neo-brutalist terminal）：
+   米纸底 + 墨线硬边框 + 硬偏移阴影 + 珊瑚红点缀，全站 mono。
+   保留 data-theme 切回 midnight 终端风。
    ========================================================================== */
 
 :root,
 :root[data-theme="doodle"] {
   /* base surfaces */
-  --t-bg: #fcfbf4;
+  --t-bg: #f4f1e8;
   --t-panel: #ffffff;
-  --t-panel2: #fffdf6;
+  --t-panel2: #f8f5ee;
   --t-border: #1a1a1a;
   /* text */
   --t-text: #1a1a1a;
-  --t-body: #2b2b26;
-  --t-muted: #6f6f68;
-  --t-dim: #8d8d84;
-  --t-faint: #cfcabb;
+  --t-body: #2a2820;
+  --t-muted: #8a857a;
+  --t-dim: #a49f92;
+  --t-faint: #c9c3b4;
   /* semantic hues */
-  --t-green: #36a85b;
+  --t-green: #2f9e5b;
   --t-red: #ff5447;
   --t-blue: #3f6fe0;
   --t-purple: #9a5bd0;
-  --t-accent: #ff6a00;
+  --t-accent: #ff5447;
   --t-accent-ink: #ffffff;
+  /* 链接用烧橙，与珊瑚红主色区分层级 */
+  --t-link: #c2410c;
   /* per-agent 颜色亮度：纸白底下名字要够深才读得清 */
   --agent-l-name: 38%;
   --agent-l-soft: 55%;
@@ -45,34 +48,37 @@
   --t-purple: #c4a7e7;
   --t-accent: #ff6a00;
   --t-accent-ink: #ffffff;
+  --t-link: #7cc7ff;
   /* 暗底下调亮，否则名字糊进背景 */
   --agent-l-name: 70%;
   --agent-l-soft: 62%;
 }
 
 :root {
-  /* doodle 蜡笔盘（blog doodle-shell 的 --d-* 约定） */
+  /* 蜡笔盘（沿用 --d-* 约定，色值对齐博客风） */
   --d-ink: #1a1a1a;
-  --d-paper: #fcfbf4;
-  --d-yellow: #ffd23d;
+  --d-paper: #f4f1e8;
+  --d-yellow: #ffe9c7;
   --d-red: #ff5447;
-  --d-red-soft: #ffe1dc;
+  --d-red-soft: #ffe4e0;
   --d-blue: #3f6fe0;
   --d-blue-soft: #dde7ff;
-  --d-green: #36a85b;
+  --d-green: #34b36b;
   --d-green-soft: #d8f0df;
-  --d-shadow: rgba(0, 0, 0, 0.82);
+  /* 硬偏移阴影：淡墨而非重墨，阴影只提"纸片感"不抢戏 */
+  --d-shadow: rgba(0, 0, 0, 0.16);
 
   /* presence 状态色映射（spec §9） */
   --p-working: var(--d-green);
   --p-waiting: var(--d-blue);
   --p-blocked: var(--d-red);
-  --p-done: #6f6f68;
+  --p-done: #8a857a;
   --p-offline: #cfcabb;
 
-  /* fonts：标题手绘体 + 正文无衬线 + 内容 mono，全部本地打包（fontsource） */
-  --d-marker: "ZCOOL KuaiLe", "Chalkboard SE", "Comic Sans MS", cursive;
-  --d-hand: "Permanent Marker", "Chalkboard SE", cursive;
-  --t-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --t-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, ui-monospace, monospace;
+  /* fonts：全站 mono（CJK 回退 PingFang/雅黑）；marker/hand 保留变量名，指向 mono */
+  --t-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, ui-monospace, "PingFang SC",
+    "Microsoft YaHei", monospace;
+  --d-marker: var(--t-mono);
+  --d-hand: var(--t-mono);
+  --t-sans: var(--t-mono);
 }
