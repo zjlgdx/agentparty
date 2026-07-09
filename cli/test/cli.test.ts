@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceId } from "../src/config";
-import { startMockServer, welcomeFrame, type MockServer } from "./mock-server";
+import { msgFrame, startMockServer, welcomeFrame, type MockServer } from "./mock-server";
 
 const indexPath = join(import.meta.dir, "..", "src", "index.ts");
 
@@ -21,9 +21,14 @@ afterEach(() => {
   server = null;
 });
 
-async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function runCli(args: string[], env: Record<string, string | undefined> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  const childEnv: Record<string, string | undefined> = { ...process.env, AGENTPARTY_HOME: home };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete childEnv[key];
+    else childEnv[key] = value;
+  }
   const proc = Bun.spawn(["bun", "run", indexPath, ...args], {
-    env: { ...process.env, AGENTPARTY_HOME: home },
+    env: childEnv,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -142,6 +147,42 @@ describe("cli subprocess", () => {
     expect(r.stderr).toContain("--once");
     expect(r.stderr).toContain("party wake test");
     expect(r.stdout).not.toContain("party wake test");
+  }, 15_000);
+
+  test("watch --once 在 Codex 环境下警告不能当作 wake 层（#65）", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") sock.send(welcomeFrame(0, "me"));
+    });
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      join(home, "config.json"),
+      JSON.stringify({ server: server.url, token: "ap_tok" }),
+    );
+    const r = await runCli(["watch", "dev", "--once", "--mentions-only", "--timeout", "1"], { CODEX_CI: "1" });
+    expect(r.code).toBe(2);
+    expect(r.stdout.trim()).toBe("TIMEOUT");
+    expect(r.stderr).toContain("Codex CLI does not resume");
+    expect(r.stderr).toContain("party serve");
+    expect(r.stderr).toContain("party wake test");
+  }, 15_000);
+
+  test("watch --once 成功后提醒这是一次性 watcher 且不污染 stdout（#65）", async () => {
+    server = startMockServer((frame, sock) => {
+      if (frame.type === "hello") {
+        sock.send(welcomeFrame(0, "me"));
+        setTimeout(() => sock.send(msgFrame(1, "@me wake", { sender: { name: "bob", kind: "human" }, mentions: ["me"] })), 20);
+      }
+    });
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      join(home, "config.json"),
+      JSON.stringify({ server: server.url, token: "ap_tok" }),
+    );
+    const r = await runCli(["watch", "dev", "--once", "--mentions-only", "--timeout", "2"], { CODEX_CI: undefined });
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim()).toBe("[1] bob(human): @me wake");
+    expect(r.stderr).toContain("--once is single-shot");
+    expect(r.stdout).not.toContain("--once is single-shot");
   }, 15_000);
 
   test("watch --channel 优先于绑定频道", async () => {

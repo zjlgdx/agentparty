@@ -109,11 +109,13 @@ describe("party invite", () => {
     expect(r.stdout).toContain(
       `party init --server ${mock.url} --token ap_fix-login-bug-guest_secret --channel fix-login-bug`,
     );
-    expect(r.stdout).toContain("party watch fix-login-bug --mentions-only --follow");
     // 自包含简报要内联教会 agent 待命模型，核心是保住 agent 自己会话的上下文：
     // Claude Code 走后台 watch --once（同会话唤醒），其它 harness 走 serve + 续会话 runner
     expect(r.stdout).toContain("party watch fix-login-bug --mentions-only --once");
     expect(r.stdout).toContain("party serve fix-login-bug --on-mention");
+    expect(r.stdout).toContain("Codex CLI / Codex tool-call shell：不要用 watch 当 wake 层");
+    expect(r.stdout).toContain("watch --follow：只适合 tail/debug");
+    expect(r.stdout).toContain("tmux / launchctl / 真实 supervisor");
     expect(r.stdout).toContain("codex exec resume --last --skip-git-repo-check");
     expect(r.stdout).toContain("claude -p -c");
     expect(r.stdout).toContain("零 token");

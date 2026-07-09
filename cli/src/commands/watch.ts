@@ -29,9 +29,11 @@ Self messages are skipped by default; --exclude-self is accepted as an explicit
 automation hint for scripts that want to document that behavior.
 NOTE: --follow only PRINTS messages. Most harnesses (Codex included) never turn
 background output into a new agent turn, so a mention can sit unread while you
-look online. If your harness wakes on process exit, use --once; otherwise keep
-a supervisor with: party serve <channel> --on-mention '<cmd>'. Verify the whole
-chain from another identity with: party wake test @<you>
+look online. --once is only a wake layer when your harness proves that process
+exit resumes the same agent session. Codex CLI does not; for Codex/unknown
+harnesses keep a durable supervisor with:
+  party serve <channel> --on-mention '<cmd>'
+Verify the whole chain from another identity with: party wake test @<you>
 
 Options:
   --channel C       watch channel C instead of the bound channel
@@ -50,6 +52,18 @@ export const FOLLOW_WAKE_ADVISORY =
   "(Codex does not), mentions will sit here unread while you look online. " +
   "Prefer --once (exit = wake signal) or: party serve <channel> --on-mention '<cmd>'. " +
   "Verify from another identity: party wake test @<you>";
+
+export const ONCE_CODEX_ADVISORY =
+  "warning: Codex CLI does not resume a model turn just because `party watch --once` exits. " +
+  "Use `party serve <channel> --on-mention '<codex exec resume ...; party send ...>'` " +
+  "from a durable supervisor (tmux/launchctl/daemon), then verify with `party wake test @<you>`.";
+
+export const ONCE_REARM_ADVISORY =
+  "note: --once is single-shot. Re-arm it after handling this wake, or use `party serve` for Codex/unknown harnesses.";
+
+export function isCodexRuntimeEnv(env: Record<string, string | undefined> = process.env): boolean {
+  return Object.keys(env).some((key) => key === "CODEX" || key.startsWith("CODEX_") || key.startsWith("OPENAI_CODEX"));
+}
 
 export interface WatchOptions {
   server: string;
@@ -223,7 +237,8 @@ export async function run(argv: string[]): Promise<number> {
     return 1;
   }
   if (flags.follow === true) console.error(FOLLOW_WAKE_ADVISORY);
-  return runWatch({
+  if (flags.once === true && isCodexRuntimeEnv()) console.error(ONCE_CODEX_ADVISORY);
+  const code = await runWatch({
     server: cfg.server,
     token: cfg.token,
     channel,
@@ -238,4 +253,6 @@ export async function run(argv: string[]): Promise<number> {
     onRevCursor: (r) => saveRevCursor(channel, r),
     statusline: true,
   });
+  if (flags.once === true && flags.json !== true && code === 0) console.error(ONCE_REARM_ADVISORY);
+  return code;
 }
