@@ -33,7 +33,7 @@ body {
   border: 1.6px solid var(--d-ink);
   border-radius: 2px;
 }
-::-webkit-scrollbar-track { background: #ece7d8; }
+::-webkit-scrollbar-track { background: var(--scroll-track); }
 
 /* ---- 墨线外框：直角硬边框，直接画在元素上 ---- */
 .doodle-frame,
@@ -165,8 +165,8 @@ body {
 .msg-body pre,
 .msg-body :not(pre) > code {
   font-family: var(--t-mono);
-  border: 1px solid #e2ddce;
-  background: #f1eee2;
+  border: 1px solid var(--code-border);
+  background: var(--code-bg);
 }
 .msg-body :not(pre) > code { padding: 0.05em 0.35em; font-size: 0.9em; }
 .msg-body pre {
