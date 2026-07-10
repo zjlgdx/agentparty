@@ -6,7 +6,9 @@ import { join } from "node:path";
 import {
   createBuiltinRunner,
   createSdkRunner,
+  projectAgentChildName,
   run as runServeCommand,
+  runProfileServe,
   runServe,
   writeContextFile,
   type CodexLike,
@@ -242,6 +244,31 @@ describe("runServe", () => {
     expect(reexec).toHaveLength(0); // 没 re-exec
     // 提示只播一次（两条消息两个安全点，但只 nudge 一次）
     expect(o.lines.filter((l) => l.includes("重启 serve 或加 --auto-upgrade")).length).toBe(1);
+  });
+
+  test("passes a pending CLI upgrade notice into the runner context before handling a mention", async () => {
+    const s = closeAfterOneMention();
+    const notices: unknown[] = [];
+    const o = opts({
+      server: s.url,
+      autoUpgrade: false,
+      upgradeDeps: {
+        runningVersion: "0.2.72",
+        execPath: "/usr/local/bin/party",
+        readInstalledVersion: () => "0.2.73",
+      },
+      runCommand: async (_frame, ctx) => {
+        notices.push(ctx.cliUpgrade);
+      },
+    });
+
+    expect(await runServe(o)).toBe(EXIT_ARCHIVED);
+    expect(notices[0]).toMatchObject({
+      running_version: "0.2.72",
+      installed_version: "0.2.73",
+      auto_upgrade: false,
+      action_required: "ask_user",
+    });
   });
 
   test("a failing advertise does not crash the server", async () => {
@@ -497,6 +524,45 @@ describe("builtin runner", () => {
     });
   });
 
+  test("builtin runner prompt includes CLI upgrade notice and asks the user before continuing", async () => {
+    const { post } = postRecorder();
+    const workdir = tempDir();
+    let prompt = "";
+    const runProcess: RunnerProcess = async (args) => {
+      prompt = String(args.at(-1));
+      const out = args[args.indexOf("-o") + 1]!;
+      writeFileSync(out, "I will ask first.\n");
+      return { code: 0, stdout: `session id: ${uuid(7)}\n`, stderr: "" };
+    };
+
+    await createBuiltinRunner({
+      server: "http://agentparty.test",
+      token: "ap_tok",
+      channel: "dev",
+      harness: "codex",
+      workdir,
+      runProcess,
+      post,
+    })(triggerFrame(46), {
+      ...runnerCtx(),
+      cliUpgrade: {
+        running_version: "0.2.72",
+        installed_version: "0.2.73",
+        auto_upgrade: false,
+        action_required: "ask_user",
+        message: "检测到 party CLI 已有新版本 v0.2.73（当前运行 v0.2.72）。继续任务前先询问用户是否升级。",
+        command: "curl -fsSL https://raw.githubusercontent.com/leeguooooo/agentparty/main/install.sh | sh",
+      },
+    });
+
+    const ctx = JSON.parse(prompt);
+    expect(ctx.cli_upgrade).toMatchObject({
+      installed_version: "0.2.73",
+      action_required: "ask_user",
+    });
+    expect(ctx.cli_upgrade.message).toContain("先询问用户是否升级");
+  });
+
   test("child non-zero exit posts blocked status with the runner log path and no final body", async () => {
     const { posts, post } = postRecorder();
     const workdir = tempDir();
@@ -575,6 +641,105 @@ describe("builtin runner", () => {
   });
 });
 
+describe("project profile daemon", () => {
+  test("one resident daemon fans out to invited channels with scoped child tokens and distinct sessions", async () => {
+    const home = tempDir();
+    const oldHome = process.env.AGENTPARTY_HOME;
+    process.env.AGENTPARTY_HOME = home;
+    const { posts, post } = postRecorder();
+    const profile = {
+      owner_account: "fan@example.com",
+      handle: "herness-dev",
+      name: "Herness Dev",
+      runner: "codex-sdk" as const,
+      repo_url: null,
+      workdir: null,
+      base_branch: "main",
+      worktree_strategy: "branch" as const,
+      rules: "Report readiness.",
+      invitable_by: "anyone" as const,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const served: ServeOptions[] = [];
+    const channelRuntimeCalls: Array<{ slug: string; childName: string }> = [];
+    try {
+      const code = await runProfileServe({
+        server: "http://agentparty.test",
+        humanToken: "acc-human",
+        ownerAccount: "fan@example.com",
+        handle: "herness-dev",
+        mentionsOnly: true,
+        once: true,
+        post,
+        mintRuntime: async () => ({ token: "ap_profile_runtime", profile }),
+        listInvites: async () => ["alpha", "beta", "gamma"].map((channel_slug, index) => ({
+          id: index + 1,
+          channel_slug,
+          owner_account: profile.owner_account,
+          profile_handle: profile.handle,
+          invited_by: "owner@example.com",
+          invited_at: index + 1,
+          profile,
+        })),
+        ensureChannelRuntime: async (_server, token, slug, owner, handle, childName) => {
+          expect(token).toBe("ap_profile_runtime");
+          expect(owner).toBe(profile.owner_account);
+          expect(handle).toBe(profile.handle);
+          channelRuntimeCalls.push({ slug, childName });
+          return {
+            token: `ap_child_${slug}`,
+            name: childName,
+            role: "agent",
+            owner,
+            channel_scope: slug,
+            lineage: { parent_agent: handle, root_agent: handle, team_id: handle, depth: 1, expires_at: null },
+            profile,
+          };
+        },
+        runChannelServe: async (opts) => {
+          served.push(opts);
+          await opts.advertise?.();
+          return 0;
+        },
+      });
+      expect(code).toBe(0);
+    } finally {
+      if (oldHome === undefined) delete process.env.AGENTPARTY_HOME;
+      else process.env.AGENTPARTY_HOME = oldHome;
+    }
+
+    expect(served.map((o) => o.channel).sort()).toEqual(["alpha", "beta", "gamma"]);
+    expect(served.map((o) => o.token).sort()).toEqual(["ap_child_alpha", "ap_child_beta", "ap_child_gamma"]);
+    expect(new Set(served.map((o) => o.sdkRunner?.workdir)).size).toBe(3);
+    expect(new Set(served.map((o) => o.projectAgent?.channel_workdir)).size).toBe(3);
+    expect(channelRuntimeCalls).toEqual([
+      { slug: "alpha", childName: projectAgentChildName("herness-dev", "alpha") },
+      { slug: "beta", childName: projectAgentChildName("herness-dev", "beta") },
+      { slug: "gamma", childName: projectAgentChildName("herness-dev", "gamma") },
+    ]);
+    expect(posts).toHaveLength(6);
+    const statusPosts = posts.filter((p) => (p.body as { kind: string }).kind === "status");
+    const joinPosts = posts.filter((p) => (p.body as { kind: string }).kind === "message");
+    expect(statusPosts).toHaveLength(3);
+    expect(statusPosts.every((p) => (p.body as { role?: string }).role === "host")).toBe(true);
+    expect(posts.every((p) => p.token.startsWith("ap_child_"))).toBe(true);
+    expect(String((posts[0]!.body as { note: string }).note)).toContain("front agent ready");
+    expect(String((posts[0]!.body as { note: string }).note)).toContain("team=herness-dev");
+    expect(String((posts[0]!.body as { note: string }).note)).toContain("worktree=branch");
+    expect(joinPosts.every((p) => String((p.body as { body?: string }).body).includes("front agent"))).toBe(true);
+    expect(joinPosts.every((p) => String((p.body as { body?: string }).body).includes("workers should spawn under team herness-dev"))).toBe(true);
+  });
+
+  test("project-agent child names are stable and stay within the token name limit", () => {
+    const first = projectAgentChildName("long-profile-name-for-daemon", "long-channel-name-for-parallel-review");
+    const second = projectAgentChildName("long-profile-name-for-daemon", "long-channel-name-for-parallel-review");
+    expect(first).toBe(second);
+    expect(first.length).toBeLessThanOrEqual(64);
+    expect(first).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+  });
+});
+
 describe("codex-sdk runner", () => {
   function sdkRunner(
     over: Partial<Parameters<typeof createSdkRunner>[0]> & {
@@ -622,6 +787,36 @@ describe("codex-sdk runner", () => {
     expect(state).toMatchObject({
       harness: "codex-sdk",
       thread_id: "thread_first_12345678",
+      wakes: 1,
+    });
+  });
+
+  test("persists the thread id after the first run when the SDK fills it lazily", async () => {
+    const { post } = postRecorder();
+    const workdir = tempDir();
+    const thread: ThreadLike = {
+      id: null,
+      run: async () => {
+        thread.id = "thread_lazy_12345678";
+        return { finalResponse: "lazy answer" };
+      },
+    };
+
+    await sdkRunner({
+      workdir,
+      post,
+      codexFactory: () => ({
+        startThread: () => thread,
+        resumeThread: () => {
+          throw new Error("should not resume before first thread id is stored");
+        },
+      }),
+    })(triggerFrame(101), runnerCtx());
+
+    const state = JSON.parse(readFileSync(join(workdir, "wake-session.json"), "utf8"));
+    expect(state).toMatchObject({
+      harness: "codex-sdk",
+      thread_id: "thread_lazy_12345678",
       wakes: 1,
     });
   });

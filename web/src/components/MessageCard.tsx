@@ -4,9 +4,10 @@ import type { AgentContext, MsgFrame, ReadCursor, Sender } from "@agentparty/sha
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { agentHue } from "../lib/agentColor";
-import type { IdentityDisplayMap } from "../lib/identityDisplay";
+import { displayForIdentity, resolveSenderLabel, type IdentityDisplayMap } from "../lib/identityDisplay";
 import { replaceMentionLabels } from "../lib/mentionMarkup";
 import { readStateFor } from "../lib/readList";
+import { summarizeReplyPreview } from "../lib/replyPreview";
 import { useT } from "../i18n/useT";
 import "../i18n/strings/MessageCard";
 import { fmtTime } from "../lib/time";
@@ -21,11 +22,17 @@ interface Props {
   receipts?: MentionReceipt[]; // 本条被 @ 的 agent 目标的唤醒/回执状态（Phase 1）
   readCursors?: Record<string, ReadCursor>; // 已读游标（Phase 2）
   participants?: Sender[]; // 当前连着的身份，用于算未读
+  // 引用预览：reply_to 解析出的完整原消息（Channel 用 seq → msg 的 Map 查出来的）。
+  // null 有两种含义——没有引用（reply_to 本身就是 null）或引用目标不在已加载窗口内；
+  // 后一种情况下面渲染时会降级回纯编号 ↩ #N，不强行伪造内容。
+  quotedMessage: MsgFrame | null;
   // 消息右键菜单（PR #49）：引用/编辑/撤回/复制
   canModerate: boolean;
   onReply(seq: number): void;
   onEdit(seq: number): void;
   onRetract(seq: number): void;
+  canCreateTask: boolean;
+  onCreateTask(seq: number): void;
   editing: boolean;
   editDraft: string;
   editSaving: boolean;
@@ -34,10 +41,6 @@ interface Props {
   onEditDraftChange(value: string): void;
   onEditCancel(): void;
   onEditSave(): void;
-}
-
-function displayForIdentity(name: string, identities: IdentityDisplayMap | undefined): string {
-  return identities?.[name]?.display ?? name;
 }
 
 function contextBits(ctx: AgentContext | undefined): string[] {
@@ -90,10 +93,13 @@ export function MessageCard({
   receipts,
   readCursors,
   participants,
+  quotedMessage,
   canModerate,
   onReply,
   onEdit,
   onRetract,
+  canCreateTask,
+  onCreateTask,
   editing,
   editDraft,
   editSaving,
@@ -115,14 +121,15 @@ export function MessageCard({
     msg.kind === "message" && readCursors !== undefined
       ? readStateFor(msg.seq, msg.sender.name, participants ?? [], readCursors)
       : { readers: [], unread: [] };
-  const senderLabel =
-    msg.sender.kind === "human" && msg.sender.owner ? msg.sender.owner : displayForIdentity(msg.sender.name, identityDisplay);
+  // owner/email 无论是否被 handle 取代，都作为防冒充锚点保留在下方副标签 + tooltip 中（见 senderTitle）。
+  const senderLabel = resolveSenderLabel(msg.sender, identityDisplay);
   const owner = msg.sender.owner && msg.sender.owner !== senderLabel ? msg.sender.owner : null;
   const lineage = msg.sender.lineage ?? null;
   const lineageLabel = lineage === null ? null : `child of ${lineage.parent_agent}`;
   const senderTitle = [
     `sender: ${msg.sender.name}`,
     `kind: ${msg.sender.kind}`,
+    msg.sender.handle ? `handle: ${msg.sender.handle}` : null,
     owner ? `owner: ${owner}` : null,
     lineage ? `parent: ${lineage.parent_agent}` : null,
     lineage ? `root: ${lineage.root_agent}` : null,
@@ -145,10 +152,28 @@ export function MessageCard({
   const canRevise = (self !== null && msg.sender.name === self) || canModerate;
   const canShowActions = msg.kind === "message";
   const canReply = canShowActions && !msg.retracted;
+  const canTask = canReply && canCreateTask;
   const canEdit = canReply && canRevise;
   const canRetract = canReply && canRevise;
   const saveDisabled = editSaving || editDraft.trim() === "" || editDraft === msg.body;
-  const menuItemCount = Number(canReply) + Number(canEdit) + Number(canRetract) + 1;
+  const menuItemCount = Number(canReply) + Number(canTask) + Number(canEdit) + Number(canRetract) + 1;
+  // 引用预览：quotedMessage 为 null 有两种含义——没引用，或引用目标不在已加载窗口内；
+  // 后者在渲染处降级回纯编号 ↩ #N（见下方 JSX），这里只在真有内容时才算标签/预览文字。
+  const quotedSenderLabel = quotedMessage !== null ? resolveSenderLabel(quotedMessage.sender, identityDisplay) : null;
+  const quotedPreviewText =
+    quotedMessage !== null
+      ? quotedMessage.retracted
+        ? t("MessageCard.reply.retracted")
+        : summarizeReplyPreview(quotedMessage.body)
+      : null;
+  const jumpToQuoted = () => {
+    if (msg.reply_to === null) return;
+    const target = document.getElementById(`msg-${msg.reply_to}`);
+    if (target === null) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("msg-jump-highlight");
+    window.setTimeout(() => target.classList.remove("msg-jump-highlight"), 1200);
+  };
 
   useEffect(() => {
     if (menu === null) return;
@@ -268,7 +293,11 @@ export function MessageCard({
       }
     >
       <header className="d-meta msg-head">
-        <span className="msg-avatar" aria-hidden="true" />
+        {msg.sender.avatar_thumb || msg.sender.avatar_url ? (
+          <img className="msg-avatar msg-avatar--img" src={msg.sender.avatar_thumb ?? msg.sender.avatar_url} alt="" />
+        ) : (
+          <span className="msg-avatar" aria-hidden="true" />
+        )}
         <span className="msg-sender" title={senderTitle}>{senderLabel}</span>
         {owner !== null && (
           <span className="t-mono msg-owner" title={`owner: ${owner}`}>
@@ -288,7 +317,7 @@ export function MessageCard({
             @{displayForIdentity(m, identityDisplay)}
           </span>
         ))}
-        {msg.reply_to !== null && <span className="msg-reply">↩ #{msg.reply_to}</span>}
+        {msg.reply_to !== null && quotedMessage === null && <span className="msg-reply">↩ #{msg.reply_to}</span>}
         {revisionBadges.map((badge) => (
           <span key={badge} className="msg-revision">
             {badge}
@@ -321,6 +350,19 @@ export function MessageCard({
         <span>#{msg.seq}</span>
         <time>{fmtTime(msg.ts)}</time>
       </header>
+      {msg.reply_to !== null && quotedMessage !== null && (
+        <button
+          type="button"
+          className="msg-quote"
+          onClick={jumpToQuoted}
+          title={quotedMessage.retracted ? undefined : quotedMessage.body}
+          aria-label={t("MessageCard.reply.jump", { seq: msg.reply_to })}
+        >
+          <span className="msg-quote-icon" aria-hidden="true">↩</span>
+          <span className="msg-quote-sender">{quotedSenderLabel}</span>
+          <span className="msg-quote-text">{quotedPreviewText}</span>
+        </button>
+      )}
       <MessageStatus
         receipts={receipts ?? []}
         readers={read.readers}
@@ -351,6 +393,18 @@ export function MessageCard({
               }}
             >
               {t("MessageCard.menu.edit")}
+            </button>
+          )}
+          {canTask && (
+            <button
+              type="button"
+              className="msg-menu-item"
+              onClick={() => {
+                setMenu(null);
+                onCreateTask(msg.seq);
+              }}
+            >
+              {t("MessageCard.menu.task")}
             </button>
           )}
           {canRetract && (

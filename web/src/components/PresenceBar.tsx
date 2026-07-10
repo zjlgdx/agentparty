@@ -20,7 +20,7 @@ interface Props {
   roles?: ChannelRoleAssignment[];
 }
 
-interface Item {
+export interface Item {
   name: string;
   kind: Sender["kind"];
   state: PresenceState | "online"; // "online" = 已连接但还没报过 status
@@ -36,12 +36,17 @@ interface Item {
   lineage: NonNullable<PresenceEntry["lineage"]> | null;
   workflow: NonNullable<NonNullable<PresenceEntry["status"]>["workflow"]> | null;
   owner: string | null; // 所属人：agent 的操作者 / 人类的 email，仅连接中的参与者可知
+  account: string | null; // 分组锚点：与 owner 同源，但离线也保留（owner 离线出于隐私置空，account 不受影响）
+  handle: string | null; // 人类全局昵称，仅人类且已设置时有值；agent 恒为 null，天然回退 owner/name
+  displayName: string | null;
+  avatarUrl: string | null;
+  avatarThumb: string | null;
   display: string;
   responsibility: string | null;
   connectionCount: number;
 }
 
-interface PresenceGroup {
+export interface PresenceGroup {
   key: string;
   label: string;
   human: Item | null;
@@ -101,18 +106,79 @@ function presenceRank(item: Item, now: number): number {
   return 5;
 }
 
-function ownerKey(item: Item): string {
-  if (item.owner !== null && item.owner !== "") return `owner:${item.owner}`;
+// 分组锚点用 account（在线/离线都可得），不用 owner（离线出于隐私置空）——
+// 否则同一个人离线时的会话会因 owner 缺失而各自单独成组，撑大人数统计。
+export function ownerKey(item: Item): string {
+  if (item.account !== null && item.account !== "") return `account:${item.account}`;
   return `${item.kind}:${item.name}`;
 }
 
 function ownerLabel(item: Item): string {
+  // 显示优先级：handle > SSO display name > owner/account（email）> 原始 name。agent 恒无 handle，不受影响。
+  if (item.handle !== null && item.handle !== "") return item.handle;
+  if (item.displayName !== null && item.displayName !== "") return item.displayName;
   if (item.owner !== null && item.owner !== "") return item.owner;
   return item.name;
 }
 
+// 把已构造好的 Item 列表按账号折叠成组；在线/离线同账号归一组，label 走「人类优先」的 representative。
+export function buildGroups(items: Item[]): PresenceGroup[] {
+  const groupMap = new Map<string, PresenceGroup>();
+  for (const item of items) {
+    const key = ownerKey(item);
+    const existing = groupMap.get(key);
+    const group =
+      existing ??
+      ({
+        key,
+        label: ownerLabel(item),
+        human: null,
+        agents: [],
+        items: [],
+      } satisfies PresenceGroup);
+    group.items.push(item);
+    if (item.kind === "human" && group.human === null) group.human = item;
+    else group.agents.push(item);
+    groupMap.set(key, group);
+  }
+  // label 初值取自分组时第一个遇到的成员，但 handle 只可能来自人类成员——
+  // 若同一账号下 agent 先于人类出现在传入顺序里，初值会漏掉 handle。
+  // 分组结束后统一用「人类优先」的 representative 重算，和 renderGroup 里的口径保持一致、且与遍历顺序无关。
+  for (const group of groupMap.values()) {
+    group.label = ownerLabel(group.human ?? group.items[0]!);
+  }
+  return [...groupMap.values()];
+}
+
+// 顶部 "X/Y live" 计数：按账号折叠后的人数，而非会话行数——一个账号哪怕开多个离线会话也只算一个人。
+export function countLiveGroups(groups: PresenceGroup[]): { live: number; total: number } {
+  return {
+    total: groups.length,
+    live: groups.filter((g) => g.items.some((it) => it.state !== "offline")).length,
+  };
+}
+
 function groupRank(group: PresenceGroup, now: number): number {
   return Math.min(...group.items.map((item) => presenceRank(item, now)));
+}
+
+// 展开/折叠偏好：默认折叠（人多时顶部不挤），记住用户上次选择。
+const PRESENCE_EXPANDED_KEY = "ap_presence_expanded";
+
+export function readPresenceExpanded(): boolean {
+  try {
+    return localStorage.getItem(PRESENCE_EXPANDED_KEY) === "1";
+  } catch {
+    return false; // 私有模式等场景 localStorage 不可用时，默认折叠
+  }
+}
+
+function writePresenceExpanded(expanded: boolean): void {
+  try {
+    localStorage.setItem(PRESENCE_EXPANDED_KEY, expanded ? "1" : "0");
+  } catch {
+    // 写入失败不阻断本次切换，只是刷新/换标签页后会回落到默认折叠
+  }
 }
 
 export function PresenceBar({
@@ -135,6 +201,9 @@ export function PresenceBar({
   }, []);
   const now = Date.now();
 
+  // 默认折叠，展开态记 localStorage（记住偏好）。
+  const [expanded, setExpanded] = useState(() => readPresenceExpanded());
+
   // 在线 sender 带 owner；离线/最近 presence 带 account。两者都归到同一账号块。
   const byName = new Map(participants.map((p) => [p.name, p]));
   const roleByName = new Map(roles.map((role) => [role.name, role]));
@@ -144,6 +213,9 @@ export function PresenceBar({
     const sender = byName.get(name);
     const assigned = roleByName.get(name);
     const owner = sender?.owner ?? entry?.account ?? assigned?.account ?? null;
+    // 人类全局昵称：仅人类且已设置时有值，agent 恒为 null（协议层保证）。
+    const handle = sender?.handle ?? entry?.handle ?? null;
+    const displayName = sender?.display_name ?? entry?.display_name ?? null;
     const kind = sender?.kind ?? entry?.kind ?? assigned?.kind ?? "agent";
     const connected = byName.has(name);
     const meta = {
@@ -156,48 +228,58 @@ export function PresenceBar({
       context: entry?.context ?? null,
       lineage: entry?.lineage ?? sender?.lineage ?? null,
       workflow: entry?.status?.workflow ?? null,
-      display: assigned?.display ?? (kind === "human" && owner !== null ? owner : name),
+      display: assigned?.display ?? handle ?? displayName ?? (kind === "human" && owner !== null ? owner : name),
+      displayName,
+      avatarUrl: sender?.avatar_url ?? entry?.avatar_url ?? null,
+      avatarThumb: sender?.avatar_thumb ?? entry?.avatar_thumb ?? null,
       responsibility: assigned?.responsibility ?? null,
       connectionCount: sender?.connection_count ?? entry?.connection_count ?? (connected ? 1 : 0),
     };
     if (!connected) {
-      return { name, kind, state: "offline", note: null, ts: entry?.ts ?? null, owner, ...meta };
+      // owner 本就仅连接中的参与者可知（见上方字段注释）；handle 依赖同一份可信度，一并置空，
+      // 避免"显示 handle 但锚点缺失"的半可信状态——离线态照旧回退原始 name，行为与改动前一致。
+      // account 不受此限制：它只用于分组锚点、不直接展示，离线也照样保留，
+      // 否则同一账号的离线会话会各自单独成组，撑大顶部人数统计。
+      return {
+        name,
+        kind,
+        state: "offline",
+        note: null,
+        ts: entry?.ts ?? null,
+        owner: null,
+        account: owner,
+        handle: null,
+        ...meta,
+        displayName: null,
+        display: assigned?.display ?? name,
+      };
     }
     if (entry && entry.state !== "offline") {
-      return { name, kind, state: entry.state, note: entry.note, ts: entry.ts, owner, ...meta };
+      return { name, kind, state: entry.state, note: entry.note, ts: entry.ts, owner, account: owner, handle, ...meta };
     }
-    return { name, kind, state: "online", note: null, ts: entry?.ts ?? null, owner, ...meta };
+    return { name, kind, state: "online", note: null, ts: entry?.ts ?? null, owner, account: owner, handle, ...meta };
   });
-  const groupMap = new Map<string, PresenceGroup>();
-  for (const item of items) {
-    const key = ownerKey(item);
-    const existing = groupMap.get(key);
-    const group =
-      existing ??
-      ({
-        key,
-        label: ownerLabel(item),
-        human: null,
-        agents: [],
-        items: [],
-      } satisfies PresenceGroup);
-    group.items.push(item);
-    if (item.kind === "human" && group.human === null) group.human = item;
-    else group.agents.push(item);
-    groupMap.set(key, group);
-  }
-  const sortedGroups = [...groupMap.values()].sort((a, b) => {
+  const sortedGroups = buildGroups(items).sort((a, b) => {
     const rank = groupRank(a, now) - groupRank(b, now);
     if (rank !== 0) return rank;
     return a.label.localeCompare(b.label);
   });
   const [hoveredGroup, setHoveredGroup] = useState<{ key: string; left: number; top: number; width: number } | null>(null);
-  const visibleGroups = sortedGroups.slice(0, 4);
-  const overflowGroups = sortedGroups.slice(4);
-  const liveCount = items.filter((it) => it.state !== "offline").length;
+  function toggleExpanded() {
+    setHoveredGroup(null); // 折叠会把 chip 移出 DOM，先关掉可能悬着的 popover
+    setExpanded((prev) => {
+      const next = !prev;
+      writePresenceExpanded(next);
+      return next;
+    });
+  }
+  // 顶部计数按账号折叠后的人数（非会话行数）——离线会话已在 buildGroups 里按 account 归并。
+  const { live: liveGroups, total: totalGroups } = countLiveGroups(sortedGroups);
   const blockedCount = items.filter((it) => it.state === "blocked").length;
   const duplicateCount = items.filter((it) => it.connectionCount > 1).length;
-  const activePopoverGroup = hoveredGroup === null ? null : sortedGroups.find((group) => group.key === hoveredGroup.key) ?? null;
+  // 折叠态下 chip 不在 DOM 里，popover 也不该跟着冒出来。
+  const activePopoverGroup =
+    !expanded || hoveredGroup === null ? null : sortedGroups.find((group) => group.key === hoveredGroup.key) ?? null;
 
   function showGroupPopover(group: PresenceGroup, rect: DOMRect) {
     const margin = 10;
@@ -215,6 +297,7 @@ export function PresenceBar({
     const full = mode === "full";
     const titleParts = [
       it.owner !== null && it.owner !== it.name ? `${it.name} · ${it.owner}` : it.name,
+      it.handle !== null && it.handle !== "" ? `handle: ${it.handle}` : null,
       it.role !== null ? `role: ${it.role}` : null,
       it.responsibility !== null && it.responsibility !== "" ? `responsibility: ${it.responsibility}` : null,
       it.roleSource !== null ? `role source: ${it.roleSource}` : null,
@@ -313,6 +396,8 @@ export function PresenceBar({
     const hiddenAgents = group.agents.length - previewAgents.length;
     const title = [
       group.label,
+      // group.label 优先显示 handle 时，account/email 锚点在这里补回来，保证底层身份始终可查。
+      representative.owner !== null && representative.owner !== group.label ? `account: ${representative.owner}` : null,
       `${live}/${group.items.length} live`,
       duplicateSessions > 0 ? `${duplicateSessions} extra live session${duplicateSessions === 1 ? "" : "s"}` : null,
       group.human !== null ? `human: ${group.human.name}` : null,
@@ -343,7 +428,11 @@ export function PresenceBar({
         }}
       >
         <div className="presence-group-head">
-          <span className={`d-dot d-dot--${representative.state}`} />
+          {representative.avatarThumb || representative.avatarUrl ? (
+            <img className="presence-group-avatar" src={representative.avatarThumb ?? representative.avatarUrl ?? ""} alt="" />
+          ) : (
+            <span className={`d-dot d-dot--${representative.state}`} />
+          )}
           <span className="presence-group-label">{group.label}</span>
           <span className="t-mono presence-group-count">
             {live}/{group.items.length}
@@ -370,35 +459,40 @@ export function PresenceBar({
   }
 
   return (
-    <div className="presence-bar">
-      <div className="presence-meta" aria-label="channel presence summary">
-        {isPublic && <span className="d-hl public-badge">PUBLIC</span>}
-        {party && <span className="d-hl party-badge">PARTY</span>}
-        <span className="t-mono presence-summary">
-          {liveCount}/{items.length} live
+    <div className={`presence-bar${expanded ? "" : " presence-bar--collapsed"}`}>
+      <div className="presence-head">
+        <div className="presence-meta" aria-label="channel presence summary">
+          {isPublic && <span className="d-hl public-badge">PUBLIC</span>}
+          {party && <span className="d-hl party-badge">PARTY</span>}
+          <button
+            type="button"
+            className="presence-toggle"
+            aria-expanded={expanded}
+            aria-label={t(expanded ? "PresenceBar.collapse" : "PresenceBar.expand")}
+            onClick={toggleExpanded}
+          >
+            <span className="t-mono presence-summary">
+              {liveGroups}/{totalGroups} live
+            </span>
+            <span className="presence-toggle-arrow" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+          </button>
+          {blockedCount > 0 && <span className="t-mono presence-alert">{blockedCount} blocked</span>}
+          {duplicateCount > 0 && <span className="t-mono presence-alert presence-alert--duplicate">{duplicateCount} duplicate</span>}
+          {items.length === 0 && (
+            <span className="t-mono presence-empty" role="status" aria-live="polite">
+              nobody here yet
+            </span>
+          )}
+        </div>
+        <span className="conn t-mono" data-s={status} role="status" aria-live="polite">
+          {status === "open" ? "● live" : `◌ ${status}…`}
         </span>
-        {blockedCount > 0 && <span className="t-mono presence-alert">{blockedCount} blocked</span>}
-        {duplicateCount > 0 && <span className="t-mono presence-alert presence-alert--duplicate">{duplicateCount} duplicate</span>}
       </div>
-      <div className="presence-strip" aria-label="participant groups by owner">
-        {visibleGroups.map((group) => renderGroup(group, "compact"))}
-      </div>
-      {overflowGroups.length > 0 && (
-        <details className="presence-more">
-          <summary className="t-mono" title={`${overflowGroups.length} more owners`}>
-            +{overflowGroups.length}
-          </summary>
-          <div className="presence-more-list">{overflowGroups.map((group) => renderGroup(group, "full"))}</div>
-        </details>
+      {expanded && (
+        <div className="presence-strip" aria-label="participant groups by owner">
+          {sortedGroups.map((group) => renderGroup(group, "compact"))}
+        </div>
       )}
-      {items.length === 0 && (
-        <span className="t-mono presence-empty" role="status" aria-live="polite">
-          nobody here yet
-        </span>
-      )}
-      <span className="conn t-mono" data-s={status} role="status" aria-live="polite">
-        {status === "open" ? "● live" : `◌ ${status}…`}
-      </span>
       {activePopoverGroup !== null && hoveredGroup !== null && (
         <div
           className="presence-popover"

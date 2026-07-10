@@ -1,11 +1,10 @@
 /* ============================================================================
-   AgentParty doodle 皮 — 手法提炼自 blog doodle-shell.css：
-   - 纸白底 + 淡点阵网格
-   - 手绘抖动边框：::before + 不规则 border-radius + filter:url(#wobble)
-     （滤镜静态缓存，内容层 z-index:1 不过滤镜，文字保持锐利）
-   - 偏移实心阴影（5px 6px 0）
-   - 蜡笔色 pill / 状态点
-   配方：doodle 做外壳、mono 做内容。
+   AgentParty 博客风外壳 — neo-brutalist terminal：
+   - 米纸底（#f4f1e8），无网格
+   - 直角墨线边框（1.6px solid），不再用抖动滤镜
+   - 硬偏移实心阴影（2~4px, 淡墨）
+   - 全站 mono，终端提示行（$ / ❯）做点缀
+   配方：硬边框做外壳、mono 做一切。
    ========================================================================== */
 
 * { box-sizing: border-box; }
@@ -20,94 +19,79 @@ body {
 }
 
 body {
-  font-family: var(--t-sans);
-  font-size: 15px;
-  line-height: 1.6;
-  background-image: radial-gradient(rgba(0, 0, 0, 0.035) 1.3px, transparent 1.3px);
-  background-size: 24px 24px;
+  font-family: var(--t-mono);
+  font-size: 14px;
+  line-height: 1.55;
 }
 
-::selection { background: var(--d-yellow); }
+::selection { background: var(--d-red-soft); }
 
-/* ---- 手绘抖动外框：套在任何无自带 ::before 的元素上 ---- */
+/* 终端味滚动条 */
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-thumb {
+  background: var(--t-panel);
+  border: 1.6px solid var(--d-ink);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-track { background: var(--scroll-track); }
+
+/* ---- 墨线外框：直角硬边框，直接画在元素上 ---- */
 .doodle-frame,
 .d-pill,
 .d-card,
 .d-btn {
   position: relative;
   background: var(--t-panel);
-}
-.doodle-frame::before,
-.d-pill::before,
-.d-card::before,
-.d-btn::before {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border: 2.5px solid var(--d-ink);
-  border-radius: 15px 9px 17px 8px / 9px 16px 8px 15px;
-  filter: url(#wobble);
-  pointer-events: none;
-  z-index: 0;
-}
-.doodle-frame > *,
-.d-pill > *,
-.d-card > *,
-.d-btn > * {
-  position: relative;
-  z-index: 1;
+  border: 1.6px solid var(--d-ink);
 }
 
-/* ---- 消息卡片外壳：白面板 + 墨线抖动边框 + 偏移阴影 ---- */
+/* ---- 消息卡片外壳：白面板 + 墨线 + 硬偏移阴影 ---- */
 .d-card {
-  border-radius: 14px 10px 16px 9px / 10px 15px 9px 14px;
-  box-shadow: 5px 6px 0 var(--d-shadow);
+  box-shadow: 4px 4px 0 var(--d-shadow);
   padding: 14px 16px 15px;
 }
 
-/* ---- 手绘 pill（频道列表项 / presence 胶囊 / 按钮） ---- */
+/* ---- pill（频道列表项 / presence 胶囊 / 按钮） ---- */
 .d-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--d-marker);
-  font-weight: 700;
-  font-size: 14px;
+  font-weight: 500;
+  font-size: 13.5px;
   color: var(--d-ink);
   text-decoration: none;
-  padding: 7px 14px 8px;
+  padding: 7px 11px;
   cursor: pointer;
-  transition: transform 0.12s ease;
+  box-shadow: 2px 2px 0 var(--d-shadow);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.d-pill:nth-child(odd) { transform: rotate(-1.4deg); }
-.d-pill:nth-child(even) { transform: rotate(1.2deg); }
-.d-pill:hover { transform: translate(-1px, -2px) rotate(0); }
-.d-pill.is-active { background: var(--d-yellow); }
+.d-pill:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--d-shadow); }
+.d-pill.is-active { background: var(--d-red-soft); font-weight: 600; box-shadow: 3px 3px 0 var(--d-shadow); }
 
 .d-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--d-marker);
-  font-weight: 700;
-  font-size: 14px;
+  font-family: var(--t-mono);
+  font-weight: 600;
+  font-size: 13px;
   color: var(--d-ink);
-  border: none;
-  padding: 9px 18px 10px;
+  padding: 6px 14px;
   cursor: pointer;
-  transition: transform 0.12s ease;
+  box-shadow: 2px 2px 0 var(--d-shadow);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.d-btn:hover { transform: rotate(-2deg) translateY(-1px); }
-.d-btn--primary { background: var(--d-yellow); }
+.d-btn:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--d-shadow); }
+.d-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--d-shadow); }
+.d-btn--primary { background: var(--d-red); color: #fff; box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.2); }
 
-/* ---- 状态点（presence 蜡笔色映射） ---- */
+/* ---- 状态点（presence 状态色映射） ---- */
 .d-dot {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
   flex: none;
-  border: 2px solid var(--d-ink);
-  border-radius: 60% 40% 55% 45%;
-  filter: url(#wobbleHi);
+  border: 1.4px solid var(--d-ink);
+  border-radius: 50%;
   background: var(--p-offline);
 }
 .d-dot--working { background: var(--p-working); }
@@ -116,23 +100,27 @@ body {
 .d-dot--done { background: var(--p-done); }
 .d-dot--offline { background: var(--p-offline); }
 
-/* ---- 高亮块（黄底 marker 高亮，标题用） ---- */
+/* ---- 高亮块（logo「Party」章：珊瑚红反白 + 微旋转） ---- */
 .d-hl {
-  background: var(--d-yellow);
-  padding: 0 8px;
-  border-radius: 9px 14px 8px 13px / 13px 8px 14px 9px;
+  display: inline-block;
+  background: var(--d-red);
+  color: #fff;
+  padding: 0 6px;
+  border: 1.6px solid var(--d-ink);
+  box-shadow: 2px 2px 0 var(--d-shadow);
+  transform: rotate(-1.5deg);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
 }
 
 /* ---- 标题字 ---- */
 .d-title {
-  font-family: var(--d-marker);
-  font-weight: 400;
+  font-family: var(--t-mono);
+  font-weight: 700;
   color: var(--d-ink);
-  letter-spacing: 0.5px;
+  letter-spacing: -0.5px;
 }
-.d-hand { font-family: var(--d-hand); letter-spacing: 0.5px; }
+.d-hand { font-family: var(--t-mono); letter-spacing: 0.3px; }
 
 /* ---- mono 内容（消息正文里的代码、seq、时间戳、提示行） ---- */
 .t-mono { font-family: var(--t-mono); }
@@ -146,12 +134,13 @@ body {
   color: var(--t-muted);
 }
 
-/* ---- 消息正文（marked 渲染产物）：正文清晰，doodle 只做点缀 ---- */
+/* ---- 消息正文（marked 渲染产物） ---- */
 .msg-body {
   max-width: 100%;
   min-width: 0;
   color: var(--t-body);
-  font-size: 14.5px;
+  font-size: 13.5px;
+  line-height: 1.62;
   overflow-wrap: anywhere;
 }
 .msg-body > :first-child { margin-top: 6px; }
@@ -161,34 +150,39 @@ body {
 .msg-body blockquote {
   overflow-wrap: anywhere;
 }
-.msg-body a { color: var(--d-blue); text-decoration-thickness: 2px; }
+.msg-body a {
+  color: var(--t-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.msg-body a:hover { color: var(--d-red); }
 .msg-body .ap-mention {
-  color: var(--t-accent);
+  color: var(--t-link);
   font-weight: 700;
   text-decoration: none;
 }
 .msg-body pre,
 .msg-body :not(pre) > code {
   font-family: var(--t-mono);
-  border: 2px solid var(--d-ink);
-  border-radius: 10px 6px 11px 5px / 6px 11px 5px 10px;
-  background: var(--t-panel2);
+  border: 1px solid var(--code-border);
+  background: var(--code-bg);
 }
-.msg-body :not(pre) > code { padding: 0.05em 0.35em; font-size: 0.88em; }
+.msg-body :not(pre) > code { padding: 0.05em 0.35em; font-size: 0.9em; }
 .msg-body pre {
   padding: 10px 13px;
   font-size: 12.5px;
   line-height: 1.55;
   overflow-x: auto;
-  box-shadow: 4px 5px 0 var(--d-shadow);
+  border: 1.6px solid var(--d-ink);
+  box-shadow: 3px 3px 0 var(--d-shadow);
 }
 .msg-body pre code { border: none; background: none; padding: 0; }
 .msg-body blockquote {
   margin: 8px 0;
   padding: 4px 12px;
-  border-left: 5px solid var(--d-yellow);
-  background: #fffbe9;
-  border-radius: 4px 12px 12px 4px;
+  border-left: 3px solid var(--d-red);
+  background: var(--t-panel2);
 }
 
 /* ---- status 消息：时间线分隔条样式 ---- */
@@ -209,10 +203,8 @@ body {
 .msg-status::after {
   content: "";
   flex: 1;
-  height: 3px;
+  height: 1.6px;
   background: var(--t-faint);
-  border-radius: 3px;
-  filter: url(#wobble);
 }
 
 /* ---- 空状态装饰行 ---- */
@@ -223,14 +215,12 @@ body {
   text-align: center;
   padding: 28px 0;
 }
-.d-empty::before { content: "$ "; color: var(--t-accent); }
+.d-empty::before { content: "$ "; color: var(--t-link); }
 
 /* ---- 墨线粗分隔 ---- */
 .d-rule {
-  height: 4px;
+  height: 1.6px;
   background: var(--d-ink);
-  border-radius: 4px;
-  filter: url(#wobble);
   border: none;
 }
 

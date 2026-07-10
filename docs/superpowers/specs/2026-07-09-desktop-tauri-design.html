@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentParty 桌面应用设计(#63)</title>
+<style>
+:root {
+  --fg: #1a1a1a;
+  --fg-soft: #555;
+  --accent: #2456d6;
+  --border: #ddd;
+  --bg-soft: #f6f7f9;
+  --bg-code: #f2f3f5;
+  --warn: #b45309;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--fg); line-height: 1.7; max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 6rem;
+}
+header { border-bottom: 2px solid var(--accent); padding-bottom: 1rem; margin-bottom: 2rem; }
+h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+h2 { font-size: 1.25rem; margin-top: 2.5rem; border-left: 4px solid var(--accent); padding-left: .6rem; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+th, td { border: 1px solid var(--border); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+th { background: var(--bg-soft); }
+code { background: var(--bg-code); padding: .1em .35em; border-radius: 3px; font-size: .88em; font-family: "SF Mono", Menlo, Consolas, monospace; }
+pre { background: var(--bg-code); padding: .9rem 1rem; border-radius: 6px; overflow-x: auto; font-size: .84rem; line-height: 1.55; }
+pre code { background: none; padding: 0; }
+aside { background: var(--bg-soft); border-left: 4px solid var(--warn); padding: .7rem 1rem; margin: 1rem 0; font-size: .92rem; }
+.meta { color: var(--fg-soft); font-size: .9rem; }
+.meta span { margin-right: 1.2rem; }
+.decision { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: .7rem 1rem; margin: .8rem 0; }
+.decision strong { color: var(--accent); }
+nav ol { columns: 2; font-size: .92rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AgentParty 桌面应用设计(Tauri 壳复用 web)</h1>
+  <div class="meta">
+    <span>Issue: <a href="https://github.com/leeguooooo/agentparty/issues/63">#63</a></span>
+    <span>日期: 2026-07-09</span>
+    <span>状态: 设计定稿,待实现</span>
+    <span>目标读者: 第一次接触本仓库、没写过 Tauri 的开发者</span>
+  </div>
+</header>
+
+<nav>
+<ol>
+  <li><a href="#goal">目标与非目标</a></li>
+  <li><a href="#facts">现状事实(决定方案的四个约束)</a></li>
+  <li><a href="#decisions">关键决策记录</a></li>
+  <li><a href="#m1">M1 最小可用桌面壳</a></li>
+  <li><a href="#m2">M2 桌面体验(通知/托盘/配对登录)</a></li>
+  <li><a href="#m3">M3 展望</a></li>
+  <li><a href="#files">逐文件改动总表</a></li>
+  <li><a href="#ci">发布与 CI</a></li>
+  <li><a href="#test">测试计划</a></li>
+  <li><a href="#risks">风险与坑</a></li>
+  <li><a href="#howto">小白上手指南</a></li>
+</ol>
+</nav>
+
+<h2 id="goal">1. 目标与非目标</h2>
+<p><strong>目标</strong>:一个 macOS/Windows/Linux 桌面应用,复用现有 <code>web/</code> 前端全部代码,连接远端 worker(prod <code>agentparty.leeguoo.com</code> / xdream <code>agentparty.pwtk-dev.work</code> 可切换),并提供网页给不了的桌面能力:系统通知、托盘常驻、未读角标。</p>
+<p><strong>非目标</strong>:不 fork 一套桌面版 UI(web 代码是唯一 UI 源);不内置 worker(服务端仍在云上);M1/M2 不做本地 agent 进程管理(留 M3)。</p>
+
+<h2 id="facts">2. 现状事实(这四条约束决定了整个方案)</h2>
+<table>
+<tr><th>#</th><th>事实</th><th>出处</th><th>对桌面的影响</th></tr>
+<tr><td>F1</td><td>web 的所有网络调用是<strong>相对路径</strong>:30 处 <code>fetch("/api/...")</code> 集中在 <code>web/src/lib/api.ts</code>,2 处在 <code>oidc.ts</code>;WebSocket 用 <code>location.host</code> 拼 URL</td><td><code>web/src/lib/api.ts</code>、<code>oidc.ts:62,164</code>、<code>ws.ts:55-62</code></td><td>桌面 webview 的 origin 是 <code>tauri://localhost</code>,相对路径全部打空 → 必须引入可配置 API base(改动小,调用点集中)</td></tr>
+<tr><td>F2</td><td>worker <strong>没有任何 CORS 处理</strong>(grep 全仓无 access-control)</td><td><code>worker/src/index.ts</code></td><td>桌面壳跨域调 <code>/api/*</code> 会被 webview 的 CORS 拦 → worker 加白名单 CORS 中间件(D3)</td></tr>
+<tr><td>F3</td><td>会话 token 存 <code>localStorage</code>(<code>lib/api.ts:26,54</code>);web 已内置<strong>粘贴 token 登录</strong>(<code>App.tsx:388</code>);OAuth 登录 redirect_uri = <code>window.location.origin + "/auth/callback"</code></td><td><code>web/src/lib/api.ts</code>、<code>App.tsx</code>、<code>oidc.ts:134</code></td><td>OAuth 授权页不会跳回 <code>tauri://</code> → M1 用现成的粘贴登录,M2 做配对码登录(D4)</td></tr>
+<tr><td>F4</td><td>web 已有 @mention 浏览器通知开关(<code>NotifyToggle.tsx</code>,标准 <code>Notification</code> API + localStorage opt-in)</td><td><code>web/src/components/NotifyToggle.tsx</code></td><td>桌面通知不用重写业务逻辑,把 <code>Notification</code> 桥到系统通知即可(M2)</td></tr>
+</table>
+
+<h2 id="decisions">3. 关键决策记录</h2>
+<div class="decision"><strong>D1 壳选 Tauri v2,不用 Electron。</strong>理由:① 产物 ~10MB vs ~150MB;② Rust 壳与 screenpipe 同栈,团队有现成经验;③ Tauri v2 插件生态已覆盖我们要的全部能力(notification / tray / deep-link / single-instance / updater);④ UI 全在 webview 里,Electron 的 Node 集成优势用不上。</div>
+<div class="decision"><strong>D2 monorepo 加 <code>desktop/</code> workspace,不开新仓库。</strong>桌面构建直接消费 <code>../web/dist</code>,web 一次构建两端使用;版本随主仓 v* tag 走。</div>
+<div class="decision"><strong>D3 跨域方案:worker 加"桌面 origin 白名单" CORS 中间件</strong>,只放行 <code>tauri://localhost</code> / <code>http://tauri.localhost</code>(Windows 上 Tauri 的 origin)。不用 Tauri 的 http 插件绕 CORS——那要求把 web 的 fetch 全换成插件 API,侵入大。安全性:浏览器网页无法伪造 <code>tauri://</code> origin,白名单不会给 web 攻击面开口;Authorization 头本来就是显式带的,预检放行即可。WebSocket 不受 CORS 约束,不用处理。</div>
+<div class="decision"><strong>D4 登录分两步走:M1 粘贴 token(现成功能,零开发);M2 配对码(provider 无关)。</strong>不做"桌面内嵌 OAuth"——Lark/OIDC 的 redirect_uri 白名单都是 https 页面,桌面拿 code 要么占端口起 loopback(Lark 后台不一定让配 localhost),要么劫持回调域,都脏。配对码模式(手机扫码登录同构)干净且对 prod(OIDC)/xdream(Lark)一视同仁:已登录的网页生成一次性短码 → 桌面拿短码换自己的 session token。</div>
+<div class="decision"><strong>D5 API base 是运行时可配,不是编译期常量。</strong>桌面设置页可切 prod/xdream;默认值由构建环境变量 <code>VITE_API_BASE</code> 提供。浏览器版 base 恒为空串,行为与今天完全一致(零回归)。</div>
+
+<h2 id="m1">4. M1 最小可用桌面壳</h2>
+
+<h3>4.1 web 改造:引入 apiBase(桌面/浏览器共用)</h3>
+<p>新文件 <code>web/src/lib/base.ts</code>:</p>
+<pre><code>// API base:浏览器版恒为 ""(相对路径,行为不变);桌面版由设置页写 localStorage,
+// 默认取构建期 VITE_API_BASE。切换环境 = 改 localStorage + 整页 reload。
+const BASE_KEY = "ap_api_base";
+
+export function apiBase(): string {
+  try {
+    return localStorage.getItem(BASE_KEY) ?? (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setApiBase(base: string): void {
+  localStorage.setItem(BASE_KEY, base.replace(/\/+$/, ""));
+}
+
+export function apiUrl(path: string): string {
+  return apiBase() + path;
+}
+
+// ws.ts 用:base 为空沿用 location(现状);否则从 base 推导 wss host
+export function wsUrl(path: string): string {
+  const base = apiBase();
+  if (base === "") {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${location.host}${path}`;
+  }
+  return base.replace(/^http/, "ws") + path;
+}</code></pre>
+<p>改造点(机械替换,一次提交):</p>
+<table>
+<tr><th>文件</th><th>改法</th></tr>
+<tr><td><code>web/src/lib/api.ts</code>(30 处)</td><td><code>fetch("/api/x")</code> → <code>fetch(apiUrl("/api/x"))</code>;模板串同理</td></tr>
+<tr><td><code>web/src/lib/oidc.ts</code>(:62、:164 两处)</td><td>同上。redirect_uri 的 <code>window.location.origin</code> <strong>不动</strong>——OAuth 只发生在浏览器里(D4)</td></tr>
+<tr><td><code>web/src/lib/ws.ts</code>(:55-62)</td><td>URL 拼接换 <code>wsUrl(...)</code></td></tr>
+<tr><td><code>web/src/state.test.ts</code> 等现有测试</td><td>base 默认 "",应零改动;新增 base.ts 单测:空 base 相对路径、带 base 拼接、ws 推导</td></tr>
+</table>
+
+<h3>4.2 worker 改造:桌面 CORS 中间件</h3>
+<p><code>worker/src/index.ts</code>,挂在所有 <code>/api</code> 路由之前:</p>
+<pre><code>// 桌面壳(Tauri webview)的跨域放行:浏览器网页伪造不了这两个 origin,
+// 放行不会扩大 web 攻击面。凭据仍是显式 Authorization 头,不涉 cookie。
+const DESKTOP_ORIGINS = new Set(["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]);
+
+app.use("/api/*", async (c, next) => {
+  const origin = c.req.header("origin") ?? "";
+  if (!DESKTOP_ORIGINS.has(origin)) return next();
+  if (c.req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": origin,
+        "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+        "access-control-allow-headers": "authorization,content-type",
+        "access-control-max-age": "86400",
+      },
+    });
+  }
+  await next();
+  c.res.headers.set("access-control-allow-origin", origin);
+});</code></pre>
+<p>配套 vitest:OPTIONS 预检 204 带头 / 白名单外 origin 无 CORS 头 / 白名单内 GET 响应带 allow-origin。</p>
+
+<h3>4.3 <code>desktop/</code> workspace 目录树(M1 全部文件)</h3>
+<pre><code>desktop/
+├── package.json                # scripts: dev/build,依赖 @tauri-apps/cli
+└── src-tauri/
+    ├── Cargo.toml
+    ├── tauri.conf.json
+    ├── build.rs                # 标准一行:tauri_build::build()
+    ├── capabilities/
+    │   └── default.json
+    ├── icons/                  # bunx tauri icon 从一张 1024px png 生成全套
+    └── src/
+        └── main.rs             # M1 就是模板默认内容</code></pre>
+<p><code>desktop/package.json</code>:</p>
+<pre><code>{
+  "name": "@agentparty/desktop",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "cd ../web && bunx vite build && cd ../desktop && tauri build"
+  },
+  "devDependencies": { "@tauri-apps/cli": "^2" }
+}</code></pre>
+<p><code>desktop/src-tauri/tauri.conf.json</code>(M1 完整可用版):</p>
+<pre><code>{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AgentParty",
+  "identifier": "com.agentparty.desktop",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "cd ../web && bun run dev",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [{ "title": "AgentParty", "width": 1200, "height": 800, "minWidth": 800, "minHeight": 560 }],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": true, "targets": "all", "icon": ["icons/icon.icns", "icons/icon.ico", "icons/128x128.png"] }
+}</code></pre>
+<p><code>desktop/src-tauri/Cargo.toml</code> 依赖:<code>tauri = { version = "2", features = [] }</code>、<code>tauri-build</code>(build-deps)、serde/serde_json。M1 的 <code>main.rs</code> 用 <code>bunx tauri init</code> 生成的默认模板即可,一行业务代码都不用写。<code>capabilities/default.json</code> M1 用默认(core 权限);M2 追加 notification/tray 权限。根 <code>package.json</code> 的 <code>workspaces</code> 数组加 <code>"desktop"</code>。</p>
+<aside><strong>dev 与 build 的 base 差异</strong>:<code>tauri dev</code> 走 vite dev server(有 <code>/api</code> 代理到 localhost:8787,见 <code>web/vite.config.ts</code>),连本地 wrangler dev;打包版没有代理,靠 <code>VITE_API_BASE</code> 或设置页指到远端。构建命令:<code>cd web && VITE_API_BASE=https://agentparty.pwtk-dev.work bunx vite build && cd ../desktop && bunx tauri build</code>。</aside>
+
+<h3>4.4 设置页(web 内小组件,仅桌面态显示)</h3>
+<p>判定桌面态:<code>location.protocol === "tauri:"</code> 或存在 <code>window.__TAURI_INTERNALS__</code>(封装成 <code>web/src/lib/desktop.ts</code> 的 <code>isDesktop()</code>)。设置面板提供:环境切换(prod/xdream 两个预设 + 自定义 URL,调 <code>setApiBase</code> 后 reload)、当前登录身份、退出登录。挂在现有顶栏菜单里,浏览器版不渲染。</p>
+
+<h3>4.5 M1 登录(零开发)</h3>
+<p>用 web 现成的粘贴 token 登录(<code>App.tsx:388</code>)。token 从哪来,给用户三条路(写进设置页提示文案):① 已登录的浏览器 web 端 localStorage(M1.5 在 web 设置里加"复制访问令牌"按钮);② CLI:<code>party login</code> 后 <code>cat ~/.agentparty/config.json</code> 里的 token;③ 管理员 <code>party token</code> 铸的 ap_ token。</p>
+
+<h3>4.6 M1 验收标准</h3>
+<ol>
+<li><code>cd desktop && bun run dev</code> 起窗口,连本地 wrangler dev 全功能可用;</li>
+<li><code>bun run build</code> 产出 .app/.dmg(macOS),粘贴 token 登录 xdream 后:频道列表、收发消息、WebSocket 实时刷新、presence 全部正常;</li>
+<li>设置页切 prod/xdream 生效;</li>
+<li>浏览器版行为零变化(<code>bun run check</code> 全绿 + 手动冒烟 web)。</li>
+</ol>
+
+<h2 id="m2">5. M2 桌面体验</h2>
+
+<h3>5.1 系统通知(复用 NotifyToggle 业务逻辑)</h3>
+<p>装 <code>tauri-plugin-notification</code>(Cargo + JS 包 <code>@tauri-apps/plugin-notification</code>),capabilities 加 <code>"notification:default"</code>。改造 <code>NotifyToggle.tsx</code>:抽一个 <code>notify(title, body)</code> 适配层——<code>isDesktop()</code> 时调插件 API(权限请求 + 发送),否则走现有 <code>Notification</code> API。点击通知聚焦窗口并跳对应频道(插件的 action 事件里调 <code>getCurrentWindow().setFocus()</code>)。</p>
+
+<h3>5.2 托盘 + 未读角标</h3>
+<p>托盘:<code>TrayIconBuilder</code>(main.rs ~30 行):左键显示/隐藏窗口,菜单含"打开 / 检查更新 / 退出";关窗改为隐藏(拦 <code>WindowEvent::CloseRequested</code>),真正退出走托盘菜单。角标:web 侧已有未读计数逻辑,新增一个桥:未读数变化时调 Tauri command <code>set_badge(n)</code>(macOS 用 <code>set_badge_count</code>,Windows 用 overlay icon)。</p>
+
+<h3>5.3 配对码登录(worker + web + desktop 三端各一小块)</h3>
+<p>D1 migration <code>worker/migrations/0018_desktop_pairing.sql</code>:</p>
+<pre><code>-- 桌面配对码:已登录网页签发,桌面一次性兑换成自己的 session token
+CREATE TABLE desktop_pair_codes (
+  code       TEXT PRIMARY KEY,   -- 20 字符 base32 高熵(crypto.getRandomValues)
+  account    TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,   -- created_at + 5 分钟
+  claimed_at INTEGER             -- 非 NULL = 已用,拒绝二次兑换
+);</code></pre>
+<table>
+<tr><th>端</th><th>改动</th></tr>
+<tr><td>worker</td><td><code>POST /api/desktop/pair/new</code>(requireBearer,human 账号会话)→ 生成 code 落表,返回 <code>{code, expires_in:300}</code>;<code>POST /api/desktop/pair/claim</code>(无鉴权,body <code>{code}</code>)→ 校验未过期未使用 → 标记 claimed → 用该 account 走 <code>upsertHumanSessionToken</code> 同款逻辑铸一枚<strong>新的</strong>桌面会话 token 返回。限流:同 IP claim 失败 10 次/小时封禁(D1 计数即可)。过期行由下次 new 时顺手清理</td></tr>
+<tr><td>web</td><td>设置里加"连接桌面应用":调 pair/new,展示 6 秒大字 code + <code>agentparty://pair?code=...&host=...</code> 链接(点击尝试唤起桌面应用)</td></tr>
+<tr><td>desktop</td><td>装 <code>tauri-plugin-deep-link</code> + <code>tauri-plugin-single-instance</code>(deep link 的前置),注册 <code>agentparty://</code> scheme;收到 pair 链接或手输 code → 调 claim → <code>setApiBase(host)</code> + 存 token + reload。登录页加"输入配对码"输入框(不依赖 deep link 也能用)</td></tr>
+</table>
+
+<h3>5.4 M2 验收标准</h3>
+<ol>
+<li>桌面在后台时被 @,系统通知弹出,点击跳到对应频道;</li>
+<li>关窗后托盘常驻,WS 保持,未读角标随消息增长;</li>
+<li>浏览器点"连接桌面应用"或手输配对码,桌面 10 秒内完成登录;配对码只能用一次、5 分钟过期;</li>
+<li><code>bun run check</code> 全绿。</li>
+</ol>
+
+<h2 id="m3">6. M3 展望(只列方向)</h2>
+<table>
+<tr><th>方向</th><th>一句话</th><th>依赖</th></tr>
+<tr><td>party serve 管理面板</td><td><code>bun build --compile</code> 出 party 单文件二进制作 Tauri sidecar,桌面 UI 一键起停/监控 <code>party serve</code>——"给本机 agent 一个真 wake 层"变成点按钮(呼应 #55/#60)</td><td>M1</td></tr>
+<tr><td>自动更新</td><td><code>tauri-plugin-updater</code> + GitHub Releases 的 latest.json,签名密钥进 CI secret</td><td>CI(§8)</td></tr>
+<tr><td>开机自启</td><td><code>tauri-plugin-autostart</code>,设置页开关</td><td>M2</td></tr>
+</table>
+
+<h2 id="files">7. 逐文件改动总表</h2>
+<table>
+<tr><th>文件</th><th>新增/修改</th><th>内容</th><th>里程碑</th></tr>
+<tr><td><code>web/src/lib/base.ts</code>(+单测)</td><td>新增</td><td>§4.1</td><td>M1</td></tr>
+<tr><td><code>web/src/lib/api.ts</code> / <code>oidc.ts</code> / <code>ws.ts</code></td><td>修改</td><td>fetch/WS 走 apiUrl/wsUrl(机械替换)</td><td>M1</td></tr>
+<tr><td><code>web/src/lib/desktop.ts</code></td><td>新增</td><td>isDesktop() + 通知/角标/深链适配层</td><td>M1/M2</td></tr>
+<tr><td><code>web/src/components/</code>(设置面板、NotifyToggle)</td><td>修改</td><td>环境切换、复制令牌、通知适配、配对入口</td><td>M1/M2</td></tr>
+<tr><td><code>worker/src/index.ts</code></td><td>修改</td><td>CORS 中间件(§4.2);pair 两路由(§5.3)</td><td>M1/M2</td></tr>
+<tr><td><code>worker/migrations/0018_desktop_pairing.sql</code></td><td>新增</td><td>§5.3</td><td>M2</td></tr>
+<tr><td><code>worker/test/</code>(cors.test.ts、pair.test.ts)</td><td>新增</td><td>§9</td><td>M1/M2</td></tr>
+<tr><td><code>desktop/**</code>(§4.3 全部)</td><td>新增</td><td>Tauri 壳;M2 加三个插件与 tray/badge 代码</td><td>M1/M2</td></tr>
+<tr><td>根 <code>package.json</code></td><td>修改</td><td>workspaces 加 desktop</td><td>M1</td></tr>
+<tr><td><code>.github/workflows/desktop-release.yml</code></td><td>新增</td><td>§8</td><td>M1.5</td></tr>
+</table>
+
+<h2 id="ci">8. 发布与 CI</h2>
+<p>沿用仓库惯例:<strong>push main 只跑 CI,发布靠 v* tag;产物走 GitHub Release 附件分发</strong>(不进 npm/商店)。新增 workflow 用官方 <code>tauri-apps/tauri-action</code>:</p>
+<pre><code># .github/workflows/desktop-release.yml(骨架)
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  desktop:
+    strategy:
+      matrix:
+        include:
+          - platform: macos-latest        # 同时出 aarch64 + x86_64,用 args 控制
+          - platform: windows-latest
+          - platform: ubuntu-22.04
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bun install
+      - run: cd web && VITE_API_BASE=https://agentparty.leeguoo.com bunx vite build
+      - uses: tauri-apps/tauri-action@v0
+        env: { GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "AgentParty ${{ github.ref_name }}"</code></pre>
+<p>macOS 签名/公证初期跳过(用户右键打开或 <code>xattr -dr com.apple.quarantine</code>,README 写明);拿到开发者证书后再加 <code>APPLE_CERTIFICATE</code> 系列 secret,workflow 不用改结构。</p>
+
+<h2 id="test">9. 测试计划</h2>
+<table>
+<tr><th>层</th><th>用例</th></tr>
+<tr><td>web bun test</td><td>base.ts:空 base 相对路径 / 带 base 拼接 / wsUrl 推导 / setApiBase 去尾斜杠;现有测试零回归</td></tr>
+<tr><td>worker vitest</td><td>CORS:预检 204、白名单外无头、响应带 allow-origin;pair:过期拒绝 / 二次兑换拒绝 / 兑换出的 token 能过 requireBearer / 限流生效</td></tr>
+<tr><td>手动(每平台)</td><td>M1/M2 验收清单;重点:锁屏休眠后 WS 重连、切环境后旧 token 清理、通知点击聚焦</td></tr>
+<tr><td>回归</td><td><code>bun run check</code>;桌面 Rust 侧 <code>cargo check</code> 进 CI(PR 阶段只 check 不打包,省时长)</td></tr>
+</table>
+
+<h2 id="risks">10. 风险与坑</h2>
+<table>
+<tr><th>坑</th><th>应对</th></tr>
+<tr><td>Windows 上 Tauri origin 是 <code>http://tauri.localhost</code>,mac 是 <code>tauri://localhost</code></td><td>CORS 白名单两个都放(§4.2 已含);web 侧 isDesktop() 不要用 protocol 判断唯一依据,优先 <code>__TAURI_INTERNALS__</code></td></tr>
+<tr><td>webview 里 <code>localStorage</code> 存 token,清缓存即掉登录</td><td>可接受(与浏览器一致);M3 如需更稳换 tauri store 插件,适配层已隔离</td></tr>
+<tr><td>vite dev 的 <code>/api</code> 代理只在 dev 生效,打包后忘配 base → 白屏无数据</td><td>base 为空且 isDesktop() 时,登录页直接引导先选环境(设置页首启弹出)</td></tr>
+<tr><td>未签名 macOS 包被 Gatekeeper 拦</td><td>§8:README 写右键打开;后续补证书</td></tr>
+<tr><td>deep link 在 Linux 需要 .desktop 文件注册,行为各发行版不一</td><td>配对码<strong>手输路径是第一公民</strong>,deep link 只是加速;不给 Linux 深链做保证</td></tr>
+<tr><td>CORS 放行后有人担心安全</td><td>D3 已论证:origin 伪造不可行、无 cookie 凭据;评审时引用该决策</td></tr>
+</table>
+
+<h2 id="howto">11. 小白上手指南(从零到 M1 窗口跑起来)</h2>
+<ol>
+<li><strong>装环境</strong>:<code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh</code>(Rust);装 bun;macOS 需要 <code>xcode-select --install</code>。</li>
+<li><strong>基线</strong>:仓库根 <code>bun install && bun run check</code> 确认全绿。</li>
+<li><strong>web 改造先行</strong>(§4.1):建 base.ts → 机械替换三个文件 → <code>cd web && bun test && bunx vite build</code>。这步不碰桌面,单独一个 commit,浏览器零回归是它的验收。</li>
+<li><strong>worker CORS</strong>(§4.2):中间件 + vitest,单独 commit。</li>
+<li><strong>建壳</strong>:<code>mkdir desktop && cd desktop</code>,按 §4.3 逐文件创建(或 <code>bunx @tauri-apps/cli init</code> 后对照 §4.3 改配置);<code>bunx tauri icon path/to/1024.png</code> 生成图标。</li>
+<li><strong>本地跑</strong>:终端 A <code>cd worker && bun run dev</code>(wrangler dev :8787);终端 B <code>cd desktop && bun run dev</code>——窗口出现、走 vite 代理连本地 worker。</li>
+<li><strong>打包连远端</strong>:<code>cd web && VITE_API_BASE=https://agentparty.pwtk-dev.work bunx vite build && cd ../desktop && bunx tauri build</code>;装 dmg,粘贴 token 登录,过 §4.6 验收。</li>
+<li><strong>提交</strong>:中文 conventional commits,PR 关联 #63。M2 从 §5.1 通知开始做,每个小节一个 PR。</li>
+</ol>
+<p class="meta">工作量参考:M1 约 1~2 人日(大头是 web 改造与验证),M2 约 3~4 人日(配对登录占一半),CI 约 0.5 人日。</p>
+
+</body>
+</html>

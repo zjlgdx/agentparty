@@ -1,8 +1,6 @@
 // channel durable object — seq 分配 / 广播 / presence / 补拉 / 各类熔断 / webhook 投递 / temp 归档
 import {
   BODY_LIMIT,
-  LOOP_GUARD_AGENT_N,
-  LOOP_GUARD_AGENT_PARTY_N,
   LOOP_GUARD_N,
   LOOP_GUARD_PARTY_N,
   MAX_WEBHOOKS_PER_CHANNEL,
@@ -55,6 +53,10 @@ interface ConnState {
   kind: SenderKind;
   role: TokenRole;
   owner?: string;
+  handle?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  avatarThumb?: string;
   lineage?: AgentLineage;
   tokenHash: string;
   collabRole?: CollaborationRole;
@@ -68,6 +70,10 @@ interface Identity {
   kind: SenderKind;
   role: TokenRole;
   owner?: string;
+  handle?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  avatarThumb?: string;
   lineage?: AgentLineage;
   tokenHash: string;
   collabRole?: CollaborationRole;
@@ -153,6 +159,12 @@ function mergeBodyMentions(explicit: string[], text: string): string[] {
   return out;
 }
 
+function withExpandedMentions(frame: SendFrame, mentions: string[]): SendFrame {
+  return frame.kind === "message"
+    ? { ...frame, mentions }
+    : { ...frame, mentions };
+}
+
 function parseStatusScope(input: unknown): string[] | undefined | null {
   if (input === undefined) return undefined;
   if (!Array.isArray(input)) return null;
@@ -199,6 +211,8 @@ function parseCompletionArtifact(input: unknown, replyTo: number | null): Comple
   const relatedIssues = parsePositiveIntArray(raw.related_issues);
   const relatedPrs = parsePositiveIntArray(raw.related_prs);
   if (relatedIssues === null || relatedPrs === null) return null;
+  const taskId = parseOptionalPositiveSeq(raw.task_id);
+  if (taskId === null) return null;
   const artifact: CompletionArtifact = {
     kind: "final_synthesis",
     kickoff_seq: kickoffSeq,
@@ -206,6 +220,7 @@ function parseCompletionArtifact(input: unknown, replyTo: number | null): Comple
     timeout: raw.timeout,
     related_issues: relatedIssues,
     related_prs: relatedPrs,
+    ...(taskId === undefined ? {} : { task_id: taskId }),
   };
   if (byteLength(JSON.stringify(artifact)) > COMPLETION_ARTIFACT_JSON_LIMIT) return null;
   return artifact;
@@ -424,6 +439,13 @@ function parseCollaborationRole(input: unknown): CollaborationRole | undefined |
   return input as CollaborationRole;
 }
 
+// undefined = 调用方没传（用默认值）；null = 传了但非法（400）。同 parseCollaborationRole 的三态约定。
+function statusStateFrom(input: unknown): StatusState | undefined | null {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== "string" || !STATUS_STATES.includes(input)) return null;
+  return input as StatusState;
+}
+
 function parseRoleSource(input: unknown): CollaborationRoleSource | undefined | null {
   if (input === undefined) return undefined;
   if (typeof input !== "string" || !ROLE_SOURCES.includes(input)) return null;
@@ -515,12 +537,40 @@ function lineageFromHeaders(headers: Headers): AgentLineage | undefined {
   return lineage ?? undefined;
 }
 
-function senderFromIdentity(identity: Pick<Identity, "name" | "kind" | "owner" | "lineage">): Sender {
+function senderFromIdentity(identity: Pick<Identity, "name" | "kind" | "owner" | "handle" | "displayName" | "avatarUrl" | "avatarThumb" | "lineage">): Sender {
   return {
     name: identity.name,
     kind: identity.kind,
     ...(identity.owner === undefined ? {} : { owner: identity.owner }),
     ...(identity.lineage === undefined ? {} : { lineage: identity.lineage }),
+    ...(identity.handle === undefined ? {} : { handle: identity.handle }),
+    ...(identity.displayName === undefined ? {} : { display_name: identity.displayName }),
+    ...(identity.avatarUrl === undefined ? {} : { avatar_url: identity.avatarUrl }),
+    ...(identity.avatarThumb === undefined ? {} : { avatar_thumb: identity.avatarThumb }),
+  };
+}
+
+function headerText(headers: Headers, name: string): string | undefined {
+  const value = headers.get(name);
+  if (value === null || value === "") return undefined;
+  return value;
+}
+
+function decodedHeaderText(headers: Headers, name: string): string | undefined {
+  const value = headerText(headers, name);
+  if (value === undefined) return undefined;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function profileFromHeaders(headers: Headers): Pick<Identity, "displayName" | "avatarUrl" | "avatarThumb"> {
+  return {
+    displayName: decodedHeaderText(headers, "x-ap-display-name"),
+    avatarUrl: headerText(headers, "x-ap-avatar-url"),
+    avatarThumb: headerText(headers, "x-ap-avatar-thumb"),
   };
 }
 
@@ -554,6 +604,17 @@ function parseAgentContext(input: unknown): AgentContext | undefined | null {
     ...(workspaceLabel === undefined ? {} : { workspace_label: workspaceLabel }),
     ...(worktreeLabel === undefined ? {} : { worktree_label: worktreeLabel }),
   };
+}
+
+// parseSendFrame 返回 null 时用它给出更具体的拒收原因：role 拼错是 agent 自报协作角色最常见的坑，
+// 单独识别并回明确文案（列出合法值），而不是笼统的 "invalid send payload"，让 agent 能自我纠正。
+function sendRejectMessage(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return "invalid send payload";
+  const f = raw as { kind?: unknown; role?: unknown };
+  if (f.kind === "status" && f.role !== undefined && parseCollaborationRole(f.role) === null) {
+    return `role must be one of: ${COLLAB_ROLES.join(", ")}`;
+  }
+  return "invalid send payload";
 }
 
 // rest body 与 ws send 帧共用的校验（rest 侧无 type 字段）
@@ -792,6 +853,11 @@ export class ChannelDO extends Server<Env> {
         WHERE rev_seq IS NULL
           AND (edited_at IS NOT NULL OR retracted_at IS NOT NULL OR supersedes IS NOT NULL OR superseded_by IS NOT NULL
                OR completion_review_state IS NOT NULL OR completion_review_replaced_by_seq IS NOT NULL)`,
+      // 发送时快照人类 handle，同 sender_owner 手法
+      "ALTER TABLE messages ADD COLUMN sender_handle TEXT",
+      "ALTER TABLE messages ADD COLUMN sender_display_name TEXT",
+      "ALTER TABLE messages ADD COLUMN sender_avatar_url TEXT",
+      "ALTER TABLE messages ADD COLUMN sender_avatar_thumb TEXT",
     ]) {
       try {
         sql.exec(ddl);
@@ -836,6 +902,11 @@ export class ChannelDO extends Server<Env> {
       "ALTER TABLE presence ADD COLUMN status_context_json TEXT",
       "ALTER TABLE presence ADD COLUMN status_decision_json TEXT",
       "ALTER TABLE presence ADD COLUMN status_workflow_json TEXT",
+      // 当前连接的人类 handle
+      "ALTER TABLE presence ADD COLUMN handle TEXT",
+      "ALTER TABLE presence ADD COLUMN display_name TEXT",
+      "ALTER TABLE presence ADD COLUMN avatar_url TEXT",
+      "ALTER TABLE presence ADD COLUMN avatar_thumb TEXT",
     ]) {
       try {
         sql.exec(ddl);
@@ -933,6 +1004,8 @@ export class ChannelDO extends Server<Env> {
       kind: h.get("x-ap-kind") === "agent" ? "agent" : "human",
       role: (h.get("x-ap-role") ?? "readonly") as TokenRole,
       owner: h.get("x-ap-owner") ?? undefined,
+      handle: h.get("x-ap-handle") ?? undefined,
+      ...profileFromHeaders(h),
       lineage: lineageFromHeaders(h),
       tokenHash: h.get("x-ap-token-hash") ?? "",
       collabRole: parseCollaborationRole(h.get("x-ap-collab-role") ?? undefined) ?? undefined,
@@ -1059,7 +1132,7 @@ export class ChannelDO extends Server<Env> {
       }
       const send = parseSendFrame(frame);
       if (!send) {
-        this.sendFrame(connection, { type: "error", code: "bad_request", message: "invalid send payload" });
+        this.sendFrame(connection, { type: "error", code: "bad_request", message: sendRejectMessage(frame) });
         return;
       }
       const out = await this.handleSend(
@@ -1068,6 +1141,7 @@ export class ChannelDO extends Server<Env> {
           kind: st.kind,
           role: st.role,
           owner: st.owner,
+          handle: st.handle,
           lineage: st.lineage,
           tokenHash: st.tokenHash,
           collabRole: st.collabRole,
@@ -1185,7 +1259,7 @@ export class ChannelDO extends Server<Env> {
       }
       if (attempt > WEBHOOK_MAX_RETRIES) {
         this.ctx.storage.sql.exec("DELETE FROM webhook_queue WHERE id = ?", id);
-        this.insertSystemStatus(`webhook ${webhookName} 连续投递失败已停用本条`, now);
+        this.insertSystemStatus(`webhook ${webhookName} 连续投递失败已停用本条`, now, false, { state: "blocked" });
         continue;
       }
       this.ctx.storage.sql.exec(
@@ -1273,6 +1347,17 @@ export class ChannelDO extends Server<Env> {
     if (completionReviewPolicy === "sender" || completionReviewPolicy === "owner") {
       this.setMeta("completion_review_policy", completionReviewPolicy);
     }
+    const loopGuardEnabled = h.get("x-ap-loop-guard-enabled");
+    if (loopGuardEnabled === "0" || loopGuardEnabled === "1") {
+      this.setMeta("loop_guard_enabled", loopGuardEnabled);
+      if (loopGuardEnabled === "0") this.deleteMeta("loop_guard_limit");
+    }
+    const rawLoopGuardLimit = h.get("x-ap-loop-guard-limit");
+    if (rawLoopGuardLimit === "") this.deleteMeta("loop_guard_limit");
+    const loopGuardLimit = Number(rawLoopGuardLimit ?? "");
+    if (Number.isInteger(loopGuardLimit) && loopGuardLimit > 0) {
+      this.setMeta("loop_guard_limit", String(Math.min(loopGuardLimit, 10_000)));
+    }
     const workflowGuardEnabled = h.get("x-ap-workflow-guard-enabled");
     if (workflowGuardEnabled === "0" || workflowGuardEnabled === "1") {
       this.setMeta("workflow_guard_enabled", workflowGuardEnabled);
@@ -1338,7 +1423,7 @@ export class ChannelDO extends Server<Env> {
       if (delivery.ok) continue;
       const queued = Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM webhook_queue").one().n);
       if (queued >= MAX_WEBHOOK_QUEUE_ROWS) {
-        await this.insertSystemStatus("webhook retry queue is full; dropping failed delivery", now);
+        await this.insertSystemStatus("webhook retry queue is full; dropping failed delivery", now, false, { state: "blocked" });
         continue;
       }
       this.ctx.storage.sql.exec(
@@ -1494,7 +1579,9 @@ export class ChannelDO extends Server<Env> {
     options: { mentions?: string[]; workflow?: StatusWorkflow; broadcast?: boolean; state?: StatusState } = {},
   ): MsgFrame {
     const seq = this.lastSeq() + 1;
-    const state = options.state ?? "blocked";
+    // 默认 waiting 而非 blocked（#143）：信息类系统事件是常态、blocked 是例外，默认值失误的方向
+    // 必须是安全的。blocked 会让守 etiquette 的 agent 停手等人类，误报的代价远大于漏报。
+    const state = options.state ?? "waiting";
     const blockedReason = state === "blocked" ? note : null;
     const status: StatusEvent = {
       owner: "system",
@@ -1544,16 +1631,17 @@ export class ChannelDO extends Server<Env> {
     const roleSource: CollaborationRoleSource | undefined = identity.collabRole === undefined ? undefined : "assigned";
     this.ctx.storage.sql.exec(
       `INSERT INTO messages (
-         seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
+         seq, sender_name, sender_kind, sender_owner, sender_handle, sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
          status_decision_json, status_workflow_json,
          sender_role, sender_role_source, completion_artifact_json, ts
        )
-       VALUES (?, ?, ?, ?, ?, 'message', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, ?)`,
       seq,
       identity.name,
       identity.kind,
       identity.owner ?? null,
+      identity.handle ?? null,
       identity.lineage === undefined ? null : JSON.stringify(identity.lineage),
       body,
       JSON.stringify(mentions),
@@ -1692,13 +1780,19 @@ export class ChannelDO extends Server<Env> {
       });
     }
     if (url.pathname === "/internal/system-status" && request.method === "POST") {
-      const body = (await request.json().catch(() => null)) as { note?: unknown; ts?: unknown } | null;
+      const body = (await request.json().catch(() => null)) as { note?: unknown; ts?: unknown; state?: unknown } | null;
       const note = typeof body?.note === "string" ? body.note : "";
       if (!note || note.length > 1000) {
         return Response.json({ error: { code: "bad_request", message: "valid note required" } }, { status: 400 });
       }
+      // state 由 worker 层显式指定（#143）：建 task / 改可见性 / squad 增删改这类信息事件是
+      // waiting，不能落成 blocked——etiquette 教 agent「blocked 就停手等人类」，打反了会瘫痪协作。
+      const state = statusStateFrom(body?.state);
+      if (state === null) {
+        return Response.json({ error: { code: "bad_request", message: "state must be working|waiting|blocked|done" } }, { status: 400 });
+      }
       const ts = typeof body?.ts === "number" && Number.isInteger(body.ts) ? body.ts : Date.now();
-      this.insertSystemStatus(note, ts);
+      this.insertSystemStatus(note, ts, false, state === undefined ? {} : { state });
       return Response.json({ ok: true });
     }
     if (url.pathname === "/internal/charter-rev" && request.method === "POST") {
@@ -1747,6 +1841,8 @@ export class ChannelDO extends Server<Env> {
         kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
         role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
         owner: request.headers.get("x-ap-owner") ?? undefined,
+        handle: request.headers.get("x-ap-handle") ?? undefined,
+        ...profileFromHeaders(request.headers),
         lineage: lineageFromHeaders(request.headers),
         tokenHash: request.headers.get("x-ap-token-hash") ?? "",
         collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
@@ -1881,6 +1977,8 @@ export class ChannelDO extends Server<Env> {
         kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
         role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
         owner: request.headers.get("x-ap-owner") ?? undefined,
+        handle: request.headers.get("x-ap-handle") ?? undefined,
+        ...profileFromHeaders(request.headers),
         lineage: lineageFromHeaders(request.headers),
         tokenHash: request.headers.get("x-ap-token-hash") ?? "",
         collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
@@ -2059,6 +2157,8 @@ export class ChannelDO extends Server<Env> {
         kind: request.headers.get("x-ap-kind") === "agent" ? "agent" : "human",
         role: (request.headers.get("x-ap-role") ?? "readonly") as TokenRole,
         owner: request.headers.get("x-ap-owner") ?? undefined,
+        handle: request.headers.get("x-ap-handle") ?? undefined,
+        ...profileFromHeaders(request.headers),
         lineage: lineageFromHeaders(request.headers),
         tokenHash: request.headers.get("x-ap-token-hash") ?? "",
         collabRole: parseCollaborationRole(request.headers.get("x-ap-collab-role") ?? undefined) ?? undefined,
@@ -2079,7 +2179,7 @@ export class ChannelDO extends Server<Env> {
             { status: ERROR_STATUS[rate.code] },
           );
         }
-        return Response.json({ error: { code: "bad_request", message: "invalid send payload" } }, { status: 400 });
+        return Response.json({ error: { code: "bad_request", message: sendRejectMessage(raw) } }, { status: 400 });
       }
       const out = await this.handleSend(identity, send, { countRate: true });
       if (!out.ok) {
@@ -2229,6 +2329,44 @@ export class ChannelDO extends Server<Env> {
     return new Response("not found", { status: 404 });
   }
 
+  private async expandSquadMentions(frame: SendFrame): Promise<SendFrame> {
+    const mentions = frame.mentions ?? [];
+    if (mentions.length === 0) return frame;
+    const candidates = mentions.filter((name) => name !== "system" && MENTION_NAME_RE.test(name));
+    if (candidates.length === 0) return frame;
+    const placeholders = candidates.map(() => "?").join(", ");
+    const rows = await this.env.DB.prepare(
+      `SELECT name, leader_name, members_json
+         FROM channel_squads
+        WHERE channel_slug = ? AND name IN (${placeholders})`,
+    )
+      .bind(this.name, ...candidates)
+      .all<{ name: string; leader_name: string | null; members_json: string | null }>()
+      .catch(() => ({ results: [] }));
+    if (rows.results.length === 0) return frame;
+    const routed = new Set(mentions);
+    for (const row of rows.results) {
+      const members = (() => {
+        try {
+          const parsed = JSON.parse(row.members_json ?? "[]");
+          return Array.isArray(parsed)
+            ? parsed.filter((name): name is string => typeof name === "string" && MENTION_NAME_RE.test(name))
+            : [];
+        } catch {
+          return [];
+        }
+      })();
+      const targets = row.leader_name && MENTION_NAME_RE.test(row.leader_name) ? [row.leader_name] : members;
+      for (const target of targets) {
+        if (target === "system") continue;
+        routed.add(target);
+        if (routed.size >= MAX_MENTIONS) break;
+      }
+      if (routed.size >= MAX_MENTIONS) break;
+    }
+    return withExpandedMentions(frame, [...routed]);
+  }
+
   // 校验 → 分配 seq → 落库 → 修剪/presence，返回待广播帧
   private async handleSend(
     identity: Identity,
@@ -2248,6 +2386,7 @@ export class ChannelDO extends Server<Env> {
     if (byteLength(payload) > BODY_LIMIT) {
       return { ok: false, code: "too_large", message: `body exceeds ${BODY_LIMIT} bytes` };
     }
+    frame = await this.expandSquadMentions(frame);
     const workflowGuard = this.workflowGuardDecision(identity, frame);
     if (workflowGuard !== null) {
       const row = this.workflowGuardRow(workflowGuard.workflow.workflow_id);
@@ -2377,17 +2516,22 @@ export class ChannelDO extends Server<Env> {
           };
     sql.exec(
       `INSERT INTO messages (
-         seq, sender_name, sender_kind, sender_owner, sender_lineage_json, kind, body, mentions_json, reply_to,
+         seq, sender_name, sender_kind, sender_owner, sender_handle, sender_display_name, sender_avatar_url, sender_avatar_thumb,
+         sender_lineage_json, kind, body, mentions_json, reply_to,
          state, note, status_scope_json, status_summary_seq, status_blocked_reason, status_context_json,
          status_decision_json, status_workflow_json, message_workflow_json,
          sender_role, sender_role_source, completion_artifact_json, completion_review_state, completion_review_policy,
          completion_review_replaces_seq, ts
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       seq,
       identity.name,
       identity.kind,
       identity.owner ?? null,
+      identity.handle ?? null,
+      identity.displayName ?? null,
+      identity.avatarUrl ?? null,
+      identity.avatarThumb ?? null,
       identity.lineage === undefined ? null : JSON.stringify(identity.lineage),
       msg.kind,
       msg.body,
@@ -2448,14 +2592,19 @@ export class ChannelDO extends Server<Env> {
       const wakeProvided = frame.wake !== undefined ? 1 : 0;
       sql.exec(
         `INSERT INTO presence (
-           name, kind, account, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
+           name, kind, account, handle, display_name, avatar_url, avatar_thumb,
+           state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
            status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at, context_json,
            lineage_json
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            kind = excluded.kind,
            account = COALESCE(excluded.account, presence.account),
+           handle = COALESCE(excluded.handle, presence.handle),
+           display_name = COALESCE(excluded.display_name, presence.display_name),
+           avatar_url = COALESCE(excluded.avatar_url, presence.avatar_url),
+           avatar_thumb = COALESCE(excluded.avatar_thumb, presence.avatar_thumb),
            state = excluded.state,
            note = excluded.note,
            updated_at = excluded.updated_at,
@@ -2475,6 +2624,10 @@ export class ChannelDO extends Server<Env> {
         identity.name,
         identity.kind,
         identity.owner ?? null, // 人类会话 = email，agent = 所属账号；presence.account 存它供前端显示「是谁」
+        identity.handle ?? null, // 当前连接的人类 handle；同 account 手法，presence.handle 供前端展示/被 @
+        identity.displayName ?? null,
+        identity.avatarUrl ?? null,
+        identity.avatarThumb ?? null,
         frame.state,
         frame.note,
         now,
@@ -2525,7 +2678,7 @@ export class ChannelDO extends Server<Env> {
   }
 
   private workflowGuardEnabled(): boolean {
-    return this.getMeta("workflow_guard_enabled") !== "0";
+    return this.getMeta("workflow_guard_enabled") === "1";
   }
 
   private workflowGuardLimit(): number {
@@ -2686,6 +2839,7 @@ export class ChannelDO extends Server<Env> {
         mentions,
         workflow: decision.workflow,
         broadcast: false,
+        state: "blocked",
       });
       this.pruneWorkflowGuardState();
       return guardFrame;
@@ -2919,20 +3073,22 @@ export class ChannelDO extends Server<Env> {
   }
 
   private globalLoopGuardMessage(): string | null {
-    // loop guard 分档（spec §3）：party 频道放宽到 200，阈值按 meta 缓存的 mode 选
-    const guardLimit = this.getMeta("mode") === "party" ? LOOP_GUARD_PARTY_N : LOOP_GUARD_N;
+    if (this.getMeta("loop_guard_enabled") !== "1") return null;
+    const configured = Number(this.getMeta("loop_guard_limit") ?? "");
+    // 频道未显式配置 limit 时保留旧 normal/party 默认，便于手工修复旧 DO meta。
+    const guardLimit = Number.isInteger(configured) && configured > 0
+      ? Math.min(configured, 10_000)
+      : this.getMeta("mode") === "party"
+        ? LOOP_GUARD_PARTY_N
+        : LOOP_GUARD_N;
     return this.agentStreak() >= guardLimit
       ? `${guardLimit} consecutive agent messages, waiting for a human`
       : null;
   }
 
   private loopGuardMessage(agentName: string): string | null {
-    const global = this.globalLoopGuardMessage();
-    if (global !== null) return global;
-    const guardLimit = this.getMeta("mode") === "party" ? LOOP_GUARD_AGENT_PARTY_N : LOOP_GUARD_AGENT_N;
-    return this.agentCount(agentName) >= guardLimit
-      ? `${agentName} reached its ${guardLimit}-message fair-share budget since the last human message; another agent can continue, or a human/reset can clear it`
-      : null;
+    void agentName;
+    return this.globalLoopGuardMessage();
   }
 
   private clearLoopGuardState() {
@@ -2944,7 +3100,7 @@ export class ChannelDO extends Server<Env> {
   private alertLoopGuard(message: string) {
     if (this.getMeta("loop_guard_alerted") !== null) return;
     this.setMeta("loop_guard_alerted", "1");
-    this.insertSystemStatus(`loop guard tripped: ${message}`, Date.now(), true);
+    this.insertSystemStatus(`loop guard tripped: ${message}`, Date.now(), true, { state: "blocked" });
   }
 
   private isArchived(): boolean {
@@ -3010,7 +3166,8 @@ export class ChannelDO extends Server<Env> {
     const liveCounts = this.liveConnectionCounts();
     return this.ctx.storage.sql
       .exec(
-        `SELECT name, kind, account, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
+        `SELECT name, kind, account, handle, display_name, avatar_url, avatar_thumb,
+                state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
                 status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at,
                 context_json, lineage_json
          FROM presence ORDER BY name`,
@@ -3023,7 +3180,8 @@ export class ChannelDO extends Server<Env> {
     const liveCounts = this.liveConnectionCounts();
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT name, kind, account, state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
+        `SELECT name, kind, account, handle, display_name, avatar_url, avatar_thumb,
+                state, note, updated_at, status_scope_json, status_summary_seq, status_blocked_reason,
                 status_context_json, status_decision_json, status_workflow_json, role, role_source, residency, wake_kind, wake_verified_at,
                 context_json, lineage_json
          FROM presence WHERE name = ?`,
@@ -3055,6 +3213,10 @@ export class ChannelDO extends Server<Env> {
       name: String(r.name),
       ...(r.kind === "agent" || r.kind === "human" ? { kind: r.kind as SenderKind } : {}),
       ...(typeof r.account === "string" && r.account !== "" ? { account: r.account } : {}),
+      ...(typeof r.handle === "string" && r.handle !== "" ? { handle: r.handle } : {}),
+      ...(typeof r.display_name === "string" && r.display_name !== "" ? { display_name: r.display_name } : {}),
+      ...(typeof r.avatar_url === "string" && r.avatar_url !== "" ? { avatar_url: r.avatar_url } : {}),
+      ...(typeof r.avatar_thumb === "string" && r.avatar_thumb !== "" ? { avatar_thumb: r.avatar_thumb } : {}),
       state,
       note: r.note === null ? null : String(r.note),
       ts,
@@ -3097,6 +3259,10 @@ export class ChannelDO extends Server<Env> {
           const lineage = parseStoredLineage(r.sender_lineage_json);
           return lineage === undefined ? {} : { lineage };
         })(),
+        ...(r.sender_handle === null || r.sender_handle === undefined ? {} : { handle: String(r.sender_handle) }),
+        ...(r.sender_display_name === null || r.sender_display_name === undefined ? {} : { display_name: String(r.sender_display_name) }),
+        ...(r.sender_avatar_url === null || r.sender_avatar_url === undefined ? {} : { avatar_url: String(r.sender_avatar_url) }),
+        ...(r.sender_avatar_thumb === null || r.sender_avatar_thumb === undefined ? {} : { avatar_thumb: String(r.sender_avatar_thumb) }),
       },
       kind,
       body: String(r.body),

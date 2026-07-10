@@ -1,6 +1,6 @@
 // 底部插话框：Markdown、@name mention（动态在线列表补全，issue #39）、Cmd/Ctrl+Enter 发送（spec §9 第 4 块）。
 // readonly / archived 时由页面层直接不渲染本组件（错误内联为条幅）。
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, KeyboardEvent } from "react";
 import { agentHue } from "../lib/agentColor";
 import {
@@ -46,6 +46,7 @@ function sameCandidateNames(prev: MentionCandidate[], next: MentionCandidate[]):
 function groupLabel(group: string, t: TFunc): string {
   if (group === "human sessions") return t("Composer.group.humanSessions");
   if (group === "unowned agents") return t("Composer.group.unownedAgents");
+  if (group === "squads") return t("Composer.group.squads");
   return group;
 }
 
@@ -63,7 +64,13 @@ export function Composer({ draft, setDraft, onSend, ready, candidates, mentionSt
     return t("WakeReceipt.pre.offline");
   };
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const activeMentionRef = useRef<HTMLDivElement | null>(null);
   const [menu, setMenu] = useState<MentionMenuState | null>(null);
+
+  useEffect(() => {
+    if (menu === null) return;
+    activeMentionRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [menu?.active, menu?.query, menu?.start]);
 
   // 光标处是否在打 @<prefix> → 算候选菜单
   const recompute = useCallback(
@@ -176,6 +183,7 @@ export function Composer({ draft, setDraft, onSend, ready, candidates, mentionSt
                   </div>
                 )}
                 <div
+                  ref={i === menu.active ? activeMentionRef : undefined}
                   role="option"
                   aria-selected={i === menu.active}
                   className={"mention-item" + (i === menu.active ? " is-active" : "")}

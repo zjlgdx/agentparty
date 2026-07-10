@@ -398,6 +398,223 @@ export const openapiDocument = {
         },
       },
     },
+    "/api/channels/{slug}/tasks": {
+      get: {
+        summary: "list channel-scoped tasks",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "state", in: "query", schema: { type: "string", enum: ["triage", "backlog", "assigned", "in_progress", "needs_review", "done", "blocked"] } },
+          { name: "assignee", in: "query", schema: { type: "string", description: "agent/human/squad name, optional @ prefix" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } },
+        ],
+        responses: {
+          "200": { description: "{tasks:[TaskRecord]}" },
+          "400": { description: "invalid state/assignee/limit" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel not found" },
+        },
+      },
+      post: {
+        summary: "create a channel-scoped task",
+        security: [{ bearer: [] }],
+        parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["title"],
+                properties: {
+                  title: { type: "string", maxLength: 200 },
+                  desc: { type: ["string", "null"], maxLength: 8000 },
+                  description: { type: ["string", "null"], maxLength: 8000 },
+                  state: { type: "string", enum: ["triage", "backlog", "assigned", "in_progress", "needs_review", "done", "blocked"] },
+                  assignee: {
+                    type: ["object", "null"],
+                    properties: {
+                      name: { type: "string" },
+                      kind: { type: "string", enum: ["agent", "human", "squad"], default: "agent" },
+                    },
+                  },
+                  labels: { type: "array", maxItems: 20, items: { type: "string", maxLength: 40 } },
+                  priority: { type: "integer", minimum: -100, maximum: 100, default: 0 },
+                  parent_id: { type: ["integer", "null"], minimum: 1 },
+                  anchor_seqs: { type: "array", items: { type: "integer", minimum: 1 } },
+                  workflow_id: { type: ["string", "null"], maxLength: 128 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "TaskRecord" },
+          "400": { description: "invalid task body" },
+          "403": { description: "readonly token or not allowed in this channel" },
+          "404": { description: "channel or parent task not found" },
+          "410": { description: "channel archived" },
+        },
+      },
+    },
+    "/api/channels/{slug}/squads": {
+      get: {
+        summary: "list channel-scoped @squad mention groups",
+        security: [{ bearer: [] }],
+        parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": { description: "{squads:[ChannelSquad]}" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel not found" },
+        },
+      },
+      post: {
+        summary: "create a channel-scoped @squad mention group",
+        security: [{ bearer: [] }],
+        parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "members"],
+                properties: {
+                  name: { type: "string" },
+                  title: { type: ["string", "null"], maxLength: 120 },
+                  description: { type: ["string", "null"], maxLength: 4000 },
+                  leader: { type: ["string", "null"] },
+                  members: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": { description: "ChannelSquad" },
+          "400": { description: "invalid squad body" },
+          "403": { description: "readonly token or not allowed in this channel" },
+          "409": { description: "squad already exists" },
+          "410": { description: "channel archived" },
+        },
+      },
+    },
+    "/api/channels/{slug}/squads/{name}": {
+      get: {
+        summary: "read a channel-scoped @squad mention group",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "name", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": { description: "ChannelSquad" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel or squad not found" },
+        },
+      },
+      patch: {
+        summary: "update a channel-scoped @squad mention group",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "name", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  title: { type: ["string", "null"], maxLength: 120 },
+                  description: { type: ["string", "null"], maxLength: 4000 },
+                  leader: { type: ["string", "null"] },
+                  members: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "ChannelSquad" },
+          "400": { description: "invalid squad body" },
+          "403": { description: "readonly token or not allowed in this channel" },
+          "404": { description: "channel or squad not found" },
+          "410": { description: "channel archived" },
+        },
+      },
+      delete: {
+        summary: "delete a channel-scoped @squad mention group",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "name", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": { description: "{ok:true,squad:ChannelSquad}" },
+          "403": { description: "readonly token or not allowed in this channel" },
+          "404": { description: "channel or squad not found" },
+          "410": { description: "channel archived" },
+        },
+      },
+    },
+    "/api/channels/{slug}/tasks/{id}": {
+      get: {
+        summary: "read a channel-scoped task",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "id", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+        ],
+        responses: {
+          "200": { description: "TaskRecord" },
+          "400": { description: "invalid id" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel or task not found" },
+        },
+      },
+      patch: {
+        summary: "update channel-scoped task state, assignee, title, description, labels, or priority",
+        security: [{ bearer: [] }],
+        parameters: [
+          { name: "slug", in: "path", required: true, schema: { type: "string" } },
+          { name: "id", in: "path", required: true, schema: { type: "integer", minimum: 1 } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  title: { type: "string", maxLength: 200 },
+                  desc: { type: ["string", "null"], maxLength: 8000 },
+                  description: { type: ["string", "null"], maxLength: 8000 },
+                  state: { type: "string", enum: ["triage", "backlog", "assigned", "in_progress", "needs_review", "done", "blocked"] },
+                  assignee: {
+                    type: ["object", "null"],
+                    properties: {
+                      name: { type: "string" },
+                      kind: { type: "string", enum: ["agent", "human", "squad"], default: "agent" },
+                    },
+                  },
+                  labels: { type: "array", maxItems: 20, items: { type: "string", maxLength: 40 } },
+                  priority: { type: "integer", minimum: -100, maximum: 100 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "TaskRecord" },
+          "400": { description: "invalid task body" },
+          "403": { description: "readonly token or not allowed in this channel" },
+          "404": { description: "channel or task not found" },
+          "410": { description: "channel archived" },
+        },
+      },
+    },
     "/api/channels/{slug}/search": {
       get: {
         summary: "server-side retained history search",
@@ -467,6 +684,48 @@ export const openapiDocument = {
           "200": { description: "{roles:[{name,role,responsibility,assigned_by,assigned_at,kind,account,display}]}" },
           "403": { description: "not allowed in this channel" },
           "404": { description: "channel not found" },
+        },
+      },
+    },
+    "/api/channels/{slug}/perms": {
+      get: {
+        summary: "read configurable channel metadata permissions",
+        security: [{ bearer: [] }],
+        parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": { description: "{permissions:{charter_write,charter_write_agents,charter_write_agent_allowlist,members_list,members_list_agents,members_list_agent_allowlist}}" },
+          "403": { description: "not allowed in this channel" },
+          "404": { description: "channel not found" },
+        },
+      },
+      put: {
+        summary: "configure charter and member-list permissions",
+        security: [{ bearer: [] }],
+        parameters: [{ name: "slug", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  charter_write: { type: "string", enum: ["owner", "moderators", "members"] },
+                  charter_write_agents: { type: "string", enum: ["off", "moderators", "members", "allowlist"] },
+                  charter_write_agent_allowlist: { type: "array", items: { type: "string" } },
+                  members_list: { type: "string", enum: ["off", "owner", "moderators", "members"] },
+                  members_list_agents: { type: "string", enum: ["off", "moderators", "members", "allowlist"] },
+                  members_list_agent_allowlist: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "{permissions:{...}}" },
+          "400": { description: "invalid permission policy" },
+          "403": { description: "only channel moderators can change channel permissions" },
+          "404": { description: "channel not found" },
+          "410": { description: "channel archived" },
         },
       },
     },

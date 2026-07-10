@@ -156,6 +156,18 @@ describe("oidc end-to-end via SELF.fetch", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       oidc: { issuer: CONFIGURED_ISSUER, client_id: CLIENT_ID },
+      auth: {
+        providers: [
+          {
+            id: "lark-main",
+            kind: "lark",
+            label: "Sign in with Lark",
+            client_id: "cli_test_lark",
+            authorize_url: "https://accounts.larksuite.com/open-apis/authen/v1/authorize",
+            scope: "",
+          },
+        ],
+      },
       cli_client_id: "agentparty-cli",
     });
   });
@@ -179,6 +191,12 @@ describe("oidc end-to-end via SELF.fetch", () => {
       owner: "u@leeguoo.com",
       channel_scope: null,
       lineage: null,
+      handle: null,
+      display_name: null,
+      avatar_url: null,
+      avatar_thumb: null,
+      provider: null,
+      tenant_key: null,
       // OIDC 人类：非 readonly 能发/建频道；有 account 能自助铸 agent；无 scope；spawn 只给 scoped parent agent
       caps: { send: true, create_channel: true, mint_agents: true, spawn_children: false, scoped_to: null },
     });

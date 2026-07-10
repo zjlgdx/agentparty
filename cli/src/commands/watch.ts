@@ -7,6 +7,14 @@ import { resolveAuth } from "../oidc-cli";
 import { formatMsg } from "../format";
 import { MAX_TIMEOUT_SEC, isSlug, parsePositiveIntFlag } from "../validation";
 import { jsonFrame, nowTs } from "../json";
+import {
+  clearStatuslineListener,
+  heartbeatPatch,
+  lastMessageFromFrame,
+  localStatuslineBase,
+  unreadFromCursor,
+  writeStatuslineCache,
+} from "../statusline-cache";
 
 const WATCH_FLAGS = ["channel", "timeout", "follow", "once", "mentions-only", "exclude-self", "json"];
 const HELP = `usage: party watch [channel|--channel C] [--timeout N] [--mentions-only] [--exclude-self] [--follow|--once] [--json]
@@ -19,6 +27,13 @@ the process exit is the wake signal, so the mention lands in your EXISTING
 session with its context intact.
 Self messages are skipped by default; --exclude-self is accepted as an explicit
 automation hint for scripts that want to document that behavior.
+NOTE: --follow only PRINTS messages. Most harnesses (Codex included) never turn
+background output into a new agent turn, so a mention can sit unread while you
+look online. --once is only a wake layer when your harness proves that process
+exit resumes the same agent session. Codex CLI does not; for Codex/unknown
+harnesses keep a durable supervisor with:
+  party serve <channel> --on-mention '<cmd>'
+Verify the whole chain from another identity with: party wake test @<you>
 
 Options:
   --channel C       watch channel C instead of the bound channel
@@ -28,6 +43,27 @@ Options:
   --follow          keep watching after the first matching message
   --once            exit 0 right after the first matching message
   --json            emit structured NDJSON frames`;
+
+// --follow 的假在线陷阱（issue #55/#60）：watcher 打印了 mention、presence 也新鲜，但多数
+// harness（Codex 实测）不会把后台输出变成新一轮，agent 实际没醒。启动时把这件事讲清楚，
+// 并给出每种 harness 的正确待命姿势。发 stderr，不污染被消费的 stdout 流。
+export const FOLLOW_WAKE_ADVISORY =
+  "note: --follow only prints; unless your harness turns background output into a new agent turn " +
+  "(Codex does not), mentions will sit here unread while you look online. " +
+  "Prefer --once (exit = wake signal) or: party serve <channel> --on-mention '<cmd>'. " +
+  "Verify from another identity: party wake test @<you>";
+
+export const ONCE_CODEX_ADVISORY =
+  "warning: Codex CLI does not resume a model turn just because `party watch --once` exits. " +
+  "Use `party serve <channel> --on-mention '<codex exec resume ...; party send ...>'` " +
+  "from a durable supervisor (tmux/launchctl/daemon), then verify with `party wake test @<you>`.";
+
+export const ONCE_REARM_ADVISORY =
+  "note: --once is single-shot. Re-arm it after handling this wake, or use `party serve` for Codex/unknown harnesses.";
+
+export function isCodexRuntimeEnv(env: Record<string, string | undefined> = process.env): boolean {
+  return Object.keys(env).some((key) => key === "CODEX" || key.startsWith("CODEX_") || key.startsWith("OPENAI_CODEX"));
+}
 
 export interface WatchOptions {
   server: string;
@@ -44,6 +80,7 @@ export interface WatchOptions {
   onRevCursor?: (revCursor: number) => void;
   out?: (line: string) => void;
   backoffBaseMs?: number;
+  statusline?: boolean;
 }
 
 export function resolveWatchTimeoutSec(timeout: number | undefined, indefinite: boolean): number {
@@ -73,12 +110,32 @@ export async function runWatch(o: WatchOptions): Promise<number> {
       conn.close();
     }, o.timeoutSec * 1000);
   }
+  // Heartbeat on a clock, not only on traffic: a quiet channel used to leave
+  // heartbeat_ts stale, and status bars (which treat >10 min as dead) showed
+  // "listener down" while the watch sat healthily connected.
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  if (o.statusline === true) {
+    heartbeat = setInterval(() => {
+      writeStatuslineCache({
+        ...localStatuslineBase(o.channel),
+        ...heartbeatPatch("watch", Date.now(), { mentionsOnly: o.mentionsOnly }),
+      });
+    }, 60_000);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+  }
 
   try {
     for await (const frame of conn.frames) {
       if (frame.type === "welcome") {
         self = frame.self;
         lastSeq = frame.last_seq;
+        if (o.statusline === true) {
+          writeStatuslineCache({
+            ...localStatuslineBase(o.channel),
+            ...heartbeatPatch("watch", Date.now(), { mentionsOnly: o.mentionsOnly }),
+            unread: unreadFromCursor(lastSeq, o.channel),
+          });
+        }
         continue;
       }
       if (frame.type === "error") {
@@ -105,6 +162,15 @@ export async function runWatch(o: WatchOptions): Promise<number> {
       const fresh = msg.seq > conn.cursor;
       // 打印（或有意跳过）之后才推进游标，退出时入队未消费的消息留给下次补拉
       if (msg.seq > 0) conn.ack(msg.seq);
+      if (o.statusline === true) {
+        const latestSeq = Math.max(lastSeq, msg.seq);
+        writeStatuslineCache({
+          ...localStatuslineBase(o.channel),
+          ...heartbeatPatch("watch", Date.now(), { mentionsOnly: o.mentionsOnly }),
+          unread: unreadFromCursor(latestSeq, o.channel),
+          last_message: lastMessageFromFrame(msg),
+        });
+      }
       // watch --follow 是流式在读整个频道：把已读游标回给服务端，agent 的已读状态因此成立（Phase 2）。
       // 只在 follow 下发；--once / 非 follow 是「查有没有 @ 我再退」的事件驱动路径，不算逐条已读，
       // 其送达/唤醒由 wake 回执表达（不假装 agent 逐条读了频道）。只对游标之上的新消息发。
@@ -119,7 +185,9 @@ export async function runWatch(o: WatchOptions): Promise<number> {
     }
   } finally {
     if (timer) clearTimeout(timer);
+    if (heartbeat) clearInterval(heartbeat);
     conn.close();
+    if (o.statusline === true) clearStatuslineListener();
   }
 
   // 超时判定：--once 只有 onceDone 才算被唤醒（打印过重放的修订快照不算）；
@@ -182,7 +250,9 @@ export async function run(argv: string[]): Promise<number> {
     console.error("channel must match [a-z0-9][a-z0-9-]{0,63}");
     return 1;
   }
-  return runWatch({
+  if (flags.follow === true) console.error(FOLLOW_WAKE_ADVISORY);
+  if (flags.once === true && isCodexRuntimeEnv()) console.error(ONCE_CODEX_ADVISORY);
+  const code = await runWatch({
     server: cfg.server,
     token: cfg.token,
     channel,
@@ -195,5 +265,8 @@ export async function run(argv: string[]): Promise<number> {
     json: flags.json === true,
     onCursor: (c) => saveCursor(channel, c),
     onRevCursor: (r) => saveRevCursor(channel, r),
+    statusline: true,
   });
+  if (flags.once === true && flags.json !== true && code === 0) console.error(ONCE_REARM_ADVISORY);
+  return code;
 }

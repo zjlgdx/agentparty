@@ -1,10 +1,11 @@
 // party who — 从终端看频道里谁在线/可唤醒/最近，便于接着 party send --mention 把人拉进来/唤醒。
 // Claude Code 原生 @ 只认本地文件/技能，塞不进远程动态列表；本命令就是那个「动态在线列表」。
-import type { PresenceEntry, SenderKind, WakeKind } from "@agentparty/shared";
+import { autoWakeReachable, type PresenceEntry, type SenderKind, type WakeKind } from "@agentparty/shared";
 import { isHelpArg, parseArgs, str, unknownFlagError, valueFlagError } from "../args";
 import { resolveChannel } from "../config";
 import { resolveAuth } from "../oidc-cli";
 import { fetchPresence, fetchReadCursors, handleRestError } from "../rest";
+import { localStatuslineBase, unreadFromCursor, writeStatuslineCache } from "../statusline-cache";
 import { isSlug } from "../validation";
 
 const WHO_FLAGS = ["channel", "json"];
@@ -14,15 +15,17 @@ List who is in a channel, tiered by how you can reach them:
   ● online    connected right now
   ◐ wakeable  not connected, but @-mention will wake them (serve/watch/webhook)
   ○ recent    seen lately; mention delivers, wake not guaranteed
+wake=serve runs a live supervisor and webhook is server-delivered; wake=watch is
+self-declared and depends on the harness actually resuming the agent, so it is
+shown as "watch (unverified)" until proven — check with: party wake test @name
 A "read #N / read ✓ / N behind" note shows how far a streaming reader (web, or an
 agent on serve / watch --follow) has read. No note = not a line-by-line reader.
 Then bring one in: party send "@name …" --mention name
 
 Options:
   --channel C   read channel C instead of the bound channel
-  --json        emit one JSON object per line (name/kind/tier/wake/age_ms/read_seq)`;
+  --json        emit one JSON object per line (name/kind/tier/wake/wake_unverified/age_ms/read_seq)`;
 
-const WAKEABLE: readonly WakeKind[] = ["serve", "watch", "webhook"];
 const STALE_MS = 60_000; // 与 DO presence 扫描一致
 const DEAD_MS = 14 * 24 * 60 * 60 * 1000; // 14 天没露面视为幽灵，不再列
 // 系统生成的人类会话名（网页登录默认名 = UUID；OIDC 设备验证 = login-verify-*），非 @ 目标
@@ -35,6 +38,10 @@ interface Row {
   kind: SenderKind;
   tier: Tier;
   wake?: WakeKind;
+  // watch 型 wake 是自报的：presence 新鲜只证明 watcher 进程活着，不证明 harness 会因它的
+  // 输出唤醒 agent（issue #55/#60 的假在线）。没有 wake 验证记录就如实标注，让调用方先
+  // party wake test 再依赖。serve 有活的 supervisor、webhook 由服务端投递，不带此标记。
+  wake_unverified?: true;
   age_ms: number;
   connection_count?: number;
   read_seq?: number; // 读到的最大 seq（Phase 2）；无游标 = 不逐帧流式读，不标注
@@ -46,8 +53,8 @@ function kindOf(e: PresenceEntry): SenderKind {
   return SYSTEM_HUMAN_SESSION_RE.test(e.name) ? "human" : "agent";
 }
 
-// 返回该 presence 的候选行，或 null（离线人类 / 幽灵，不该列）。
-function classify(e: PresenceEntry, now: number): Row | null {
+// 返回该 presence 的候选行，或 null（离线人类 / 幽灵，不该列）。导出仅为单测。
+export function classify(e: PresenceEntry, now: number): Row | null {
   if (e.name === "system") return null;
   const seen = e.last_seen ?? e.ts ?? 0;
   const age = now - seen;
@@ -56,7 +63,8 @@ function classify(e: PresenceEntry, now: number): Row | null {
   const wake = e.wake?.kind;
   let tier: Tier;
   if (online) tier = "online";
-  else if (wake !== undefined && WAKEABLE.includes(wake) && age <= DEAD_MS) tier = "wakeable";
+  // wakeable 统一口径（#47/#55）：serve/watch 需 presence 新鲜，human_driven 不承诺自动响应；webhook 离线也算
+  else if (autoWakeReachable(e, now, STALE_MS) && age <= DEAD_MS) tier = "wakeable";
   else tier = "recent";
   if (tier !== "online") {
     if (kind === "human") return null; // 围观的人类只在线才列
@@ -67,6 +75,7 @@ function classify(e: PresenceEntry, now: number): Row | null {
     kind,
     tier,
     ...(wake === undefined ? {} : { wake }),
+    ...(wake === "watch" && e.wake?.verified_at === undefined ? { wake_unverified: true as const } : {}),
     age_ms: age,
     ...(typeof e.connection_count === "number" && e.connection_count > 1
       ? { connection_count: e.connection_count }
@@ -139,6 +148,10 @@ export async function run(argv: string[]): Promise<number> {
     } catch {
       /* 端点不存在 / 拉取失败：不标注已读，who 其余照常 */
     }
+    writeStatuslineCache({
+      ...localStatuslineBase(channel),
+      ...(lastSeq > 0 ? { unread: unreadFromCursor(lastSeq, channel) } : {}),
+    });
     const now = Date.now();
     const rows = presence
       .map((e) => classify(e, now))
@@ -154,7 +167,7 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     }
     for (const r of rows) {
-      const wake = r.tier === "wakeable" && r.wake ? ` ${r.wake}` : "";
+      const wake = r.tier === "wakeable" && r.wake ? ` ${r.wake}${r.wake_unverified === true ? " (unverified)" : ""}` : "";
       const age = r.tier === "online" ? "" : ` (${humanAge(r.age_ms)})`;
       const duplicate = r.connection_count !== undefined ? ` x${r.connection_count} sessions` : "";
       const read = readNote(r.read_seq, lastSeq);

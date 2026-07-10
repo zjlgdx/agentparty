@@ -9,11 +9,16 @@ import { run as sendRun } from "../src/commands/send";
 import { run as agentRun } from "../src/commands/agent";
 import { run as spawnRun } from "../src/commands/spawn";
 import { run as whoamiRun } from "../src/commands/whoami";
+import { run as statuslineRun } from "../src/commands/statusline";
 import { run as logoutRun } from "../src/commands/logout";
+import { run as channelRun } from "../src/commands/channel";
+import { writeStatuslineCache } from "../src/statusline-cache";
+import { startRestMock, type RestMock } from "./rest-mock";
 import { startOidcMock, type OidcMock } from "./oidc-mock";
 
 let home: string;
 let mock: OidcMock | null = null;
+let restMock: RestMock | null = null;
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 // 捕获 console.log / console.error
@@ -36,6 +41,8 @@ afterEach(() => {
   console.error = origErr;
   delete process.env.AGENTPARTY_HOME;
   rmSync(home, { recursive: true, force: true });
+  restMock?.stop();
+  restMock = null;
   mock?.stop();
   mock = null;
 });
@@ -194,6 +201,100 @@ describe("agent add", () => {
     expect(code).toBe(1);
     expect(mock.requests.find((r) => r.path === "/api/agents")).toBeUndefined();
   });
+
+  test("creates a reusable project-agent profile with account bearer", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    const code = await agentRun([
+      "create",
+      "herness-dev",
+      "--runner",
+      "codex-sdk",
+      "--repo",
+      "git@github.com:leeguooooo/herness-use.git",
+      "--workdir",
+      "/Users/leo/github.com/herness-use",
+      "--base-branch",
+      "main",
+      "--worktree",
+      "branch",
+      "--rules",
+      "Report readiness.",
+      "--invitable-by",
+      "anyone",
+    ]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/agent-profiles" && r.method === "POST");
+    expect(req?.auth).toBe("Bearer acc-live");
+    expect(req?.body).toEqual({
+      handle: "herness-dev",
+      runner: "codex-sdk",
+      repo_url: "git@github.com:leeguooooo/herness-use.git",
+      workdir: "/Users/leo/github.com/herness-use",
+      base_branch: "main",
+      worktree_strategy: "branch",
+      rules: "Report readiness.",
+      invitable_by: "anyone",
+    });
+    expect(logs.join("\n")).toContain("fan@example.com/herness-dev");
+  });
+
+  test("lists project-agent profiles", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    expect(await agentRun(["create", "builder", "--runner", "codex"])).toBe(0);
+    logs = [];
+    const code = await agentRun(["list"]);
+    expect(code).toBe(0);
+    expect(mock.requests.some((r) => r.path === "/api/agent-profiles" && r.method === "GET")).toBe(true);
+    expect(logs.join("\n")).toContain("fan@example.com/builder");
+  });
+
+  test("rejects invalid project-agent profile flags before any request", async () => {
+    mock = startOidcMock();
+    liveAccount(mock.url);
+    expect(await agentRun(["create", "builder", "--runner", "bad"])).toBe(1);
+    expect(await agentRun(["create", "builder", "--runner", "codex", "--worktree", "bad"])).toBe(1);
+    expect(await agentRun(["create", "builder", "--runner", "codex", "--invitable-by", "bad"])).toBe(1);
+    expect(mock.requests.find((r) => r.path === "/api/agent-profiles")).toBeUndefined();
+  });
+});
+
+describe("channel invite-agent", () => {
+  test("invites a reusable project-agent profile to the resolved channel", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_runtime" });
+    writeState({ channel: "ops", cursor: 0 });
+
+    const code = await channelRun(["invite-agent", "fan@example.com/herness-dev"]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/channels/ops/project-agents");
+    expect(req?.method).toBe("POST");
+    expect(req?.auth).toBe("Bearer ap_runtime");
+    expect(req?.body).toEqual({ owner_account: "fan@example.com", handle: "herness-dev" });
+    expect(logs.join("\n")).toContain("invited fan@example.com/herness-dev to ops");
+  });
+
+  test("rejects malformed profile refs before any request", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_runtime" });
+    writeState({ channel: "ops", cursor: 0 });
+    expect(await channelRun(["invite-agent", "bad-ref"])).toBe(1);
+    expect(mock.requests.find((r) => r.path.includes("/project-agents"))).toBeUndefined();
+  });
+
+  test("removes a project-agent profile from only the resolved channel", async () => {
+    mock = startOidcMock();
+    writeConfig({ server: mock.url, token: "ap_runtime" });
+    writeState({ channel: "ops", cursor: 0 });
+
+    const code = await channelRun(["remove-agent", "fan@example.com/herness-dev"]);
+    expect(code).toBe(0);
+    const req = mock.requests.find((r) => r.path === "/api/channels/ops/project-agents" && r.method === "DELETE");
+    expect(req?.auth).toBe("Bearer ap_runtime");
+    expect(req?.body).toEqual({ owner_account: "fan@example.com", handle: "herness-dev" });
+    expect(logs.join("\n")).toContain("removed fan@example.com/herness-dev from ops");
+  });
 });
 
 describe("spawn", () => {
@@ -209,6 +310,7 @@ describe("spawn", () => {
     expect(req?.auth).toBe("Bearer ap_parent");
     expect(req?.body).toEqual({ name: "child-bot", channel_scope: "ops", ttl_sec: 1800, team_id: "team.1" });
     expect(logs.join("\n")).toContain("ap_child-bot_secret");
+    expect(errs.join("\n")).toContain("give it to the worker");
     expect(errs.join("\n")).toContain("party init --server");
     expect(errs.join("\n")).toContain("--channel ops");
   });
@@ -345,6 +447,95 @@ describe("whoami", () => {
     const code = await whoamiRun(["--bogus"]);
     expect(code).toBe(1);
     expect(errs.join("\n")).toContain("unknown option --bogus");
+  });
+});
+
+describe("statusline", () => {
+  test("prints cached agent identity and bound channel without network", async () => {
+    writeConfig({
+      server: "https://agentparty.example",
+      token: "ap_cached_secret",
+      identity: {
+        name: "codex-mini",
+        email: null,
+        kind: "agent",
+        role: "agent",
+        owner: "leo",
+        channel_scope: "dev",
+        verified_at: 123,
+      },
+    });
+    writeState({ channel: "dev", cursor: 0 });
+
+    const code = await statuslineRun(["--no-network"]);
+    expect(code).toBe(0);
+    expect(logs).toEqual(["ap:codex-mini #dev"]);
+    expect(errs).toEqual([]);
+  });
+
+  test("prints cached active task count without network", async () => {
+    writeConfig({
+      server: "https://agentparty.example",
+      token: "ap_cached_secret",
+      identity: {
+        name: "codex-mini",
+        email: null,
+        kind: "agent",
+        role: "agent",
+        owner: "leo",
+        channel_scope: "dev",
+        verified_at: 123,
+      },
+    });
+    writeState({ channel: "dev", cursor: 0 });
+    writeStatuslineCache({ channel: "dev", tasks: { mine_active: 2, mine_total: 3 } });
+
+    const code = await statuslineRun(["--no-network"]);
+    expect(code).toBe(0);
+    expect(logs).toEqual(["ap:codex-mini #dev tasks:2"]);
+    expect(errs).toEqual([]);
+  });
+
+  test("prints nothing when no identity is available", async () => {
+    const code = await statuslineRun(["--no-network"]);
+    expect(code).toBe(0);
+    expect(logs).toEqual([]);
+    expect(errs).toEqual([]);
+  });
+
+  test("refresh verifies identity and updates the local cache", async () => {
+    restMock = startRestMock();
+    writeConfig({ server: restMock.url, token: "ap_refresh_secret" });
+    writeState({ channel: "ops", cursor: 0 });
+
+    const code = await statuslineRun(["--refresh"]);
+    expect(code).toBe(0);
+    expect(logs).toEqual(["ap:agent #ops"]);
+    expect(restMock.requests.some((r) => r.path === "/api/me" && r.headers.authorization === "Bearer ap_refresh_secret")).toBe(true);
+    logs.length = 0;
+
+    const cachedCode = await statuslineRun(["--no-network"]);
+    expect(cachedCode).toBe(0);
+    expect(logs).toEqual(["ap:agent #ops"]);
+  });
+
+  test("rejects invalid channel override", async () => {
+    writeConfig({
+      server: "https://agentparty.example",
+      token: "ap_cached_secret",
+      identity: {
+        name: "codex-mini",
+        email: null,
+        kind: "agent",
+        role: "agent",
+        owner: null,
+        channel_scope: null,
+        verified_at: 123,
+      },
+    });
+    const code = await statuslineRun(["--channel", "Bad_Channel", "--no-network"]);
+    expect(code).toBe(1);
+    expect(errs.join("\n")).toContain("channel must match");
   });
 });
 

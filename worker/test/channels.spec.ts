@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { api, createChannel, postMessage, seedToken, uniq, WsClient } from "./helpers";
 
 describe("channels", () => {
@@ -22,7 +22,7 @@ describe("channels", () => {
     expect(found).toMatchObject({ slug, kind: "temp", archived_at: null });
   });
 
-  it("list aggregates last message + presence per channel (spec §9 第 1 块)", async () => {
+  it("list stays lightweight by default and aggregates summary only when requested", async () => {
     const { token, name } = await seedToken("agent");
     const slug = uniq("ch");
     const created = await api("/api/channels", token, {
@@ -50,8 +50,64 @@ describe("channels", () => {
 
     list = await api("/api/channels", token);
     found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === slug);
+    expect(found).toMatchObject({ last_message: null, presence: [] });
+
+    list = await api("/api/channels?summary=1", token);
+    found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === slug);
     expect(found?.last_message).toMatchObject({ sender: name, kind: "status", body: "digging" });
     expect(found?.presence).toContainEqual(expect.objectContaining({ name, state: "working" }));
+  });
+
+  it("list returns owned/member booleans per identity without leaking owner_account (频道分类)", async () => {
+    const ownerAccount = uniq("owner");
+    const memberAccount = uniq("member");
+    const thirdAccount = uniq("third");
+    const { token: ownerToken } = await seedToken("agent", uniq("tok-owner"), { owner: ownerAccount });
+    const { token: memberToken } = await seedToken("agent", uniq("tok-member"), { owner: memberAccount });
+    const { token: thirdToken } = await seedToken("agent", uniq("tok-third"), { owner: thirdAccount });
+
+    const slug = uniq("ch");
+    const created = await api("/api/channels", ownerToken, {
+      method: "POST",
+      body: JSON.stringify({ slug, kind: "standing" }), // 默认 private
+    });
+    expect(created.status).toBe(201);
+
+    type Listed = { slug: string; owned?: boolean; member?: boolean; owner_account?: string; created_by?: string };
+
+    // 房主自己看：owned=true；未显式加自己进 channel_members 时 member=false（建频道不会自动写会员表）
+    let list = await api("/api/channels", ownerToken);
+    let found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === slug);
+    expect(found).toMatchObject({ owned: true, member: false });
+    expect(found?.owner_account).toBeUndefined();
+    expect(found?.created_by).toBeUndefined();
+
+    // 加入前：私有频道对未加入的其它账号不可见（不在列表里）
+    list = await api("/api/channels", memberToken);
+    found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === slug);
+    expect(found).toBeUndefined();
+
+    // 房主把另一账号加为 member
+    const add = await api(`/api/channels/${slug}/members/${encodeURIComponent(memberAccount)}`, ownerToken, {
+      method: "PUT",
+    });
+    expect(add.status).toBe(200);
+
+    // 加入后：该账号看到 member=true、owned=false
+    list = await api("/api/channels", memberToken);
+    found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === slug);
+    expect(found).toMatchObject({ owned: false, member: true });
+
+    // 公开频道：没建也没加入的第三个账号看到 owned=false && member=false
+    const publicSlug = uniq("pub");
+    const createdPublic = await api("/api/channels", ownerToken, {
+      method: "POST",
+      body: JSON.stringify({ slug: publicSlug, kind: "standing", visibility: "public" }),
+    });
+    expect(createdPublic.status).toBe(201);
+    list = await api("/api/channels", thirdToken);
+    found = ((await list.json()) as { channels: Listed[] }).channels.find((c) => c.slug === publicSlug);
+    expect(found).toMatchObject({ owned: false, member: false });
   });
 
   it("409 on slug conflict", async () => {
@@ -159,5 +215,31 @@ describe("channels", () => {
 
     const outsider = await seedToken("human", uniq("outsider"), { owner: "outsider@example.com" });
     expect((await api(`/api/channels/${slug}/identities`, outsider.token)).status).toBe(403);
+  });
+
+  it("identity map prefers human profile handles over opaque provider account ids", async () => {
+    const ownerName = "lark-ad72b3f9749e";
+    const ownerAccount = "lark:on_22608d74bd2d7f39f6dc67d0da248fa5";
+    const owner = await seedToken("human", ownerName, { owner: ownerAccount });
+    const handle = uniq("leo");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO account_profiles (account, handle, display_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(ownerAccount, handle, "Leo", now, now)
+      .run();
+    const slug = await createChannel(owner.token);
+    expect((await postMessage(slug, owner.token, "hello from lark")).status).toBe(200);
+
+    const identitiesRes = await api(`/api/channels/${slug}/identities`, owner.token);
+    expect(identitiesRes.status).toBe(200);
+    const identities = ((await identitiesRes.json()) as {
+      identities: { name: string; display: string; kind?: string; account?: string }[];
+    }).identities;
+
+    expect(identities).toContainEqual(
+      expect.objectContaining({ name: ownerName, display: handle, handle, kind: "human", account: ownerAccount }),
+    );
   });
 });

@@ -21,6 +21,14 @@ export function startRestMock(handler?: RestHandler): RestMock {
   // 有状态 webhook 存储：add 后 list 能查到
   const webhooks = new Map<string, { name: string; url: string; filter: string }[]>();
   const roles = new Map<string, { name: string; role: string; responsibility: string | null; assigned_by: string; assigned_at: number }[]>();
+  const perms = new Map<string, {
+    charter_write: string;
+    charter_write_agents: string;
+    charter_write_agent_allowlist: string[];
+    members_list: string;
+    members_list_agents: string;
+    members_list_agent_allowlist: string[];
+  }>();
   const joinLinks = new Map<
     string,
     { code: string; channel_slug: string; created_by: string; created_at: number; expires_at: number | null; max_uses: number | null; uses: number; revoked_at: number | null }[]
@@ -63,6 +71,9 @@ export function startRestMock(handler?: RestHandler): RestMock {
       if (r.method === "GET" && r.path === "/api/channels") {
         return Response.json({ channels: [] });
       }
+      if (r.method === "GET" && /^\/api\/channels\/[^/]+\/presence$/.test(r.path)) {
+        return Response.json({ presence: [] });
+      }
       if (r.method === "POST" && /^\/api\/channels\/[^/]+\/messages$/.test(r.path)) {
         return Response.json({ seq: 1 });
       }
@@ -86,6 +97,14 @@ export function startRestMock(handler?: RestHandler): RestMock {
       if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/completion-gate$/.test(r.path)) {
         const b = body as { gate: "off" | "reviewer"; policy?: "sender" | "owner" };
         return Response.json({ gate: b.gate, policy: b.policy ?? "sender" });
+      }
+      if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/loop-guard$/.test(r.path)) {
+        const b = body as { enabled: boolean; limit?: number };
+        return Response.json({ enabled: b.enabled, limit: b.enabled ? b.limit : null });
+      }
+      if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/workflow-guard$/.test(r.path)) {
+        const b = body as { enabled: boolean; limit?: number };
+        return Response.json({ enabled: b.enabled, limit: b.enabled ? b.limit : null });
       }
       if (r.method === "PUT" && /^\/api\/channels\/[^/]+\/visibility$/.test(r.path)) {
         const b = body as { visibility: "public" | "private" };
@@ -198,6 +217,26 @@ export function startRestMock(handler?: RestHandler): RestMock {
         }
         if (r.method === "DELETE" && memberMatch[2]) {
           return Response.json({ ok: true });
+        }
+      }
+      const permsMatch = r.path.match(/^\/api\/channels\/([^/]+)\/perms$/);
+      if (permsMatch) {
+        const slug = decodeURIComponent(permsMatch[1]!);
+        const current = perms.get(slug) ?? {
+          charter_write: "moderators",
+          charter_write_agents: "moderators",
+          charter_write_agent_allowlist: [],
+          members_list: "members",
+          members_list_agents: "members",
+          members_list_agent_allowlist: [],
+        };
+        if (r.method === "GET") {
+          return Response.json({ permissions: current });
+        }
+        if (r.method === "PUT") {
+          const next = { ...current, ...(body as Record<string, unknown>) };
+          perms.set(slug, next as typeof current);
+          return Response.json({ permissions: next });
         }
       }
       if (r.method === "GET" && /^\/api\/channels\/[^/]+\/messages$/.test(r.path)) {

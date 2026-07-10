@@ -7,6 +7,7 @@ export const MessageCardStrings: LocaleDict = {
     "MessageCard.retracted": "message retracted",
     "MessageCard.menu.reply": "reply",
     "MessageCard.menu.edit": "edit",
+    "MessageCard.menu.task": "turn into task",
     "MessageCard.menu.retract": "retract",
     "MessageCard.menu.copy": "copy text",
     "MessageCard.menu.more": "message actions",
@@ -14,6 +15,8 @@ export const MessageCardStrings: LocaleDict = {
     "MessageCard.edit.save": "save",
     "MessageCard.edit.saving": "saving…",
     "MessageCard.edit.cancel": "cancel",
+    "MessageCard.reply.retracted": "original message retracted",
+    "MessageCard.reply.jump": "jump to original message #{seq}",
   },
   zh: {
     "MessageCard.badge.edited": "已编辑",
@@ -21,6 +24,7 @@ export const MessageCardStrings: LocaleDict = {
     "MessageCard.retracted": "消息已撤回",
     "MessageCard.menu.reply": "引用回复",
     "MessageCard.menu.edit": "编辑",
+    "MessageCard.menu.task": "转为任务",
     "MessageCard.menu.retract": "撤回",
     "MessageCard.menu.copy": "复制文本",
     "MessageCard.menu.more": "消息操作",
@@ -28,6 +32,8 @@ export const MessageCardStrings: LocaleDict = {
     "MessageCard.edit.save": "保存",
     "MessageCard.edit.saving": "保存中…",
     "MessageCard.edit.cancel": "取消",
+    "MessageCard.reply.retracted": "原消息已撤回",
+    "MessageCard.reply.jump": "跳转到原消息 #{seq}",
   },
 };
 

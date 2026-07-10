@@ -2,7 +2,7 @@
 // App 用 key={slug} 挂载本组件，切频道即整体重建（socket/状态零残留）。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { buildHostBoard, type CollaborationRole, type HostBoard, type MsgFrame, type PresenceEntry, type ReadCursor, type SearchHit, type Sender, type WakeDelivery } from "@agentparty/shared";
+import { buildHostBoard, type ChannelSquad, type CollaborationRole, type HostBoard, type MsgFrame, type PresenceEntry, type ReadCursor, type SearchHit, type Sender, type TaskAssigneeKind, type TaskRecord, type TaskState, type TaskSummary, type WakeDelivery } from "@agentparty/shared";
 import { AgentJoin } from "../components/AgentJoin";
 import { AgentTokens } from "../components/AgentTokens";
 import { VisibilityToggle } from "../components/VisibilityToggle";
@@ -10,6 +10,8 @@ import { JoinLink } from "../components/JoinLink";
 import { Composer } from "../components/Composer";
 import { Markdown } from "../components/Markdown";
 import { MessageCard } from "../components/MessageCard";
+import { MentionToast, type MentionToastItem } from "../components/MentionToast";
+import { NotifyToggle, readNotifyOptin } from "../components/NotifyToggle";
 import { PresenceBar } from "../components/PresenceBar";
 import {
   archiveChannel,
@@ -17,19 +19,27 @@ import {
   type ChannelCharter,
   type ChannelIdentity,
   type ChannelRoleInfo,
+  createTask,
   deleteChannelRole,
   ForbiddenError,
   fetchChannelCharter,
   fetchChannelIdentities,
   fetchChannelRoles,
+  fetchSquads,
   fetchMessages,
+  fetchTaskSummary,
+  fetchTasks,
   fetchWakeDeliveries,
   kickParticipant,
   resetGuard,
   reviseMessage,
+  reviewCompletion,
   searchMessages,
   setChannelCharter,
+  setLoopGuard,
+  setWorkflowGuard,
   setChannelRole,
+  updateTask,
   ValidationError,
 } from "../lib/api";
 import { agentHue } from "../lib/agentColor";
@@ -42,10 +52,14 @@ import {
   agentFilterSearch,
   filterByAgent,
   parseAgentFilter,
+  setKind,
   toggleAgent,
   type AgentFilter,
+  type AgentFilterKind,
   type AgentFilterMode,
 } from "../lib/filters";
+import { shouldNotify, shouldToast } from "../lib/notify";
+import { summarizeReplyPreview } from "../lib/replyPreview";
 import { fmtTime } from "../lib/time";
 import { groupTeamMessages, summarizeTeams, type TeamMessageThread, type TeamSummary } from "../lib/teams";
 import { ChannelSocket } from "../lib/ws";
@@ -59,6 +73,10 @@ interface Props {
   token: string;
   mode: "normal" | "party";
   isPublic: boolean; // 顶栏 PUBLIC 徽章（spec §4）
+  loopGuardEnabled: boolean;
+  loopGuardLimit: number | null;
+  workflowGuardEnabled: boolean;
+  workflowGuardLimit: number;
   shareMode: boolean;
   // 有可写人类账号会话（me.role==="human" 且非分享链接）才允许铸 agent（spec §10）
   canMintAgent: boolean;
@@ -67,6 +85,7 @@ interface Props {
   agentNamePrefix: string; // 生成 agent 名的前缀来源（email/name 前缀，退回 slug）
   accountKey: string | null;
   inviterName: string; // 当前邀请人的频道身份名，接入包报到时 @ 他
+  selfHandle: string | null; // 当前人类账号的 @handle（Task C2 被@通知用；agent/未设置 handle 时为 null）
   onAuthFailed(message: string): void;
 }
 
@@ -78,12 +97,6 @@ const MESSAGE_CAP = 300;
 const COLLAB_ROLES: CollaborationRole[] = ["host", "worker", "reviewer", "observer"];
 // 触顶阈值：滚动到离顶部这么近就预取上一页
 const TOP_LOAD_PX = 80;
-
-function summarizeReplyPreview(body: string): string {
-  const collapsed = body.replace(/\s+/g, " ").trim();
-  if (collapsed.length <= 96) return collapsed;
-  return `${collapsed.slice(0, 93)}...`;
-}
 
 function positiveInt(value: string, fallback: number, max: number): number | null {
   if (value.trim() === "") return fallback;
@@ -144,7 +157,21 @@ interface RoleDraft {
   responsibility: string;
 }
 
-type ChannelPanel = "charter" | "roles" | "coordination" | "search";
+type ChannelPanel = "charter" | "roles" | "coordination" | "tasks" | "search" | "settings";
+type AdminSurface = "agentJoin" | "agentTokens" | "joinLink";
+const TASK_BOARD_STATES: readonly TaskState[] = ["triage", "backlog", "assigned", "in_progress", "needs_review", "blocked", "done"];
+
+function taskCompletionSeq(task: TaskRecord): number | null {
+  if (task.state !== "needs_review" || task.completion_artifact === null) return null;
+  const seq = task.anchor_seqs.at(-1);
+  return Number.isInteger(seq) && (seq ?? 0) > 0 ? seq! : null;
+}
+
+function compactTaskTitle(text: string, fallback: string): string {
+  const raw = text.replace(/\s+/g, " ").trim();
+  const label = raw === "" ? fallback : raw;
+  return label.length > 120 ? `${label.slice(0, 117)}...` : label;
+}
 
 function roleDraftFrom(role: ChannelRoleInfo): RoleDraft {
   return { role: role.role, responsibility: role.responsibility ?? "" };
@@ -157,6 +184,100 @@ function roleViewFor(role: ChannelRoleInfo, identity: ChannelIdentity | undefine
   const accountLabel = account && account !== "" ? account : kind === "human" ? display : t("Channel.roles.unowned");
   const owner = account && account !== display ? account : null;
   return { role, display, accountLabel, owner, kind };
+}
+
+interface GuardSettingsPanelProps {
+  canModerate: boolean;
+  loopEnabled: boolean;
+  loopLimit: string;
+  workflowEnabled: boolean;
+  workflowLimit: string;
+  saving: "loop" | "workflow" | null;
+  error: string | null;
+  onLoopEnabled(next: boolean): void;
+  onLoopLimit(next: string): void;
+  onWorkflowEnabled(next: boolean): void;
+  onWorkflowLimit(next: string): void;
+  onSaveLoop(): void;
+  onSaveWorkflow(): void;
+}
+
+function GuardSettingsPanel({
+  canModerate,
+  loopEnabled,
+  loopLimit,
+  workflowEnabled,
+  workflowLimit,
+  saving,
+  error,
+  onLoopEnabled,
+  onLoopLimit,
+  onWorkflowEnabled,
+  onWorkflowLimit,
+  onSaveLoop,
+  onSaveWorkflow,
+}: GuardSettingsPanelProps) {
+  const t = useT();
+  return (
+    <div className="guard-settings">
+      <section className="guard-setting-row">
+        <div className="guard-setting-head">
+          <h3>{t("Channel.settings.loopGuard")}</h3>
+          <label className="guard-switch">
+            <input
+              type="checkbox"
+              checked={loopEnabled}
+              disabled={!canModerate || saving !== null}
+              onChange={(event) => onLoopEnabled(event.currentTarget.checked)}
+            />
+            <span>{loopEnabled ? t("Channel.settings.enabled") : t("Channel.settings.unlimited")}</span>
+          </label>
+        </div>
+        <div className="guard-setting-controls">
+          <input
+            className="guard-limit-input"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={loopLimit}
+            placeholder={t("Channel.settings.unlimited")}
+            disabled={!canModerate || !loopEnabled || saving !== null}
+            onChange={(event) => onLoopLimit(event.currentTarget.value)}
+          />
+          <button type="button" className="d-btn d-btn--primary" disabled={!canModerate || saving !== null} onClick={onSaveLoop}>
+            {saving === "loop" ? t("Channel.settings.saving") : t("Channel.settings.save")}
+          </button>
+        </div>
+      </section>
+      <section className="guard-setting-row">
+        <div className="guard-setting-head">
+          <h3>{t("Channel.settings.workflowGuard")}</h3>
+          <label className="guard-switch">
+            <input
+              type="checkbox"
+              checked={workflowEnabled}
+              disabled={!canModerate || saving !== null}
+              onChange={(event) => onWorkflowEnabled(event.currentTarget.checked)}
+            />
+            <span>{workflowEnabled ? t("Channel.settings.enabled") : t("Channel.settings.off")}</span>
+          </label>
+        </div>
+        <div className="guard-setting-controls">
+          <input
+            className="guard-limit-input"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={workflowLimit}
+            disabled={!canModerate || !workflowEnabled || saving !== null}
+            onChange={(event) => onWorkflowLimit(event.currentTarget.value)}
+          />
+          <button type="button" className="d-btn d-btn--primary" disabled={!canModerate || saving !== null} onClick={onSaveWorkflow}>
+            {saving === "workflow" ? t("Channel.settings.saving") : t("Channel.settings.save")}
+          </button>
+        </div>
+      </section>
+      {error !== null && <p className="guard-setting-error">{error}</p>}
+    </div>
+  );
 }
 
 function roleCountLabel(role: CollaborationRole, count: number, t: TFunc): string {
@@ -279,6 +400,7 @@ function CharterBanner({
 
 function DivisionBoard({
   canModerate,
+  slug,
   roles,
   roleDrafts,
   roleError,
@@ -295,6 +417,7 @@ function DivisionBoard({
   forceOpen = false,
 }: {
   canModerate: boolean;
+  slug: string;
   roles: ChannelRoleInfo[];
   roleDrafts: Record<string, RoleDraft>;
   roleError: string | null;
@@ -311,6 +434,24 @@ function DivisionBoard({
   forceOpen?: boolean;
 }) {
   const t = useT();
+  const [selfHintOpen, setSelfHintOpen] = useState(false);
+  const [selfHintCopied, setSelfHintCopied] = useState(false);
+  useEffect(() => {
+    if (!selfHintCopied) return;
+    const timer = window.setTimeout(() => setSelfHintCopied(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [selfHintCopied]);
+  const selfReportCmd = `party status --channel ${slug} working --role worker --note ${JSON.stringify(
+    t("Channel.roles.selfReport.exampleNote"),
+  )}`;
+  const copySelfReportCmd = () => {
+    if (navigator.clipboard !== undefined) {
+      void navigator.clipboard
+        .writeText(selfReportCmd)
+        .then(() => setSelfHintCopied(true))
+        .catch(() => undefined);
+    }
+  };
   const identityByName = new Map(identities.map((identity) => [identity.name, identity]));
   const selfRoles = selfReportedRoles(roles, presence, identities);
   const roleViews = [
@@ -350,6 +491,30 @@ function DivisionBoard({
         </div>
       </summary>
       <div className="role-board-body">
+        <div className="role-selfhint">
+          <button
+            type="button"
+            className="role-selfhint-toggle t-mono"
+            aria-expanded={selfHintOpen}
+            onClick={() => setSelfHintOpen((v) => !v)}
+          >
+            <span>{t("Channel.roles.selfReport.summary")}</span>
+            <span className="role-selfhint-arrow" aria-hidden="true">{selfHintOpen ? "▾" : "▸"}</span>
+          </button>
+          {selfHintOpen && (
+            <div className="role-selfhint-body">
+              <p>{t("Channel.roles.selfReport.intro")}</p>
+              <div className="role-selfhint-cmd">
+                <code className="t-mono">{selfReportCmd}</code>
+                <button type="button" className="d-btn role-selfhint-copy" onClick={copySelfReportCmd}>
+                  {selfHintCopied ? t("Channel.roles.selfReport.copied") : t("Channel.roles.selfReport.copy")}
+                </button>
+              </div>
+              <p className="t-mono role-selfhint-meta">{t("Channel.roles.selfReport.roles")}</p>
+              <p className="role-selfhint-caveat">{t("Channel.roles.selfReport.hostCaveat")}</p>
+            </div>
+          )}
+        </div>
         {groups.length > 0 ? (
           <div className="role-account-list">
             {groups.map((group) => (
@@ -510,6 +675,7 @@ function AgentFilterPanel({
   total,
   onMode,
   onToggle,
+  onKind,
   onClear,
 }: {
   senders: string[];
@@ -518,9 +684,11 @@ function AgentFilterPanel({
   total: number;
   onMode: (mode: AgentFilterMode) => void;
   onToggle: (agent: string) => void;
+  onKind: (kind: AgentFilterKind) => void;
   onClear: () => void;
 }) {
-  const active = filter.agents.length > 0;
+  const t = useT();
+  const active = filter.agents.length > 0 || filter.kind !== null;
   return (
     <section className="agent-filter-panel" aria-label="agent filters">
       <div className="agent-filter-head">
@@ -531,7 +699,7 @@ function AgentFilterPanel({
             aria-pressed={filter.mode === "only"}
             onClick={() => onMode("only")}
           >
-            <span>Only</span>
+            <span>{t("Channel.filter.only")}</span>
           </button>
           <button
             className={"d-btn agent-filter-mode" + (filter.mode === "except" ? " is-active" : "")}
@@ -539,7 +707,25 @@ function AgentFilterPanel({
             aria-pressed={filter.mode === "except"}
             onClick={() => onMode("except")}
           >
-            <span>Hide</span>
+            <span>{t("Channel.filter.hide")}</span>
+          </button>
+        </div>
+        <div className="agent-filter-kinds" role="group" aria-label="agent filter kind">
+          <button
+            className={"d-btn agent-filter-kind" + (filter.kind === "human" ? " is-active" : "")}
+            type="button"
+            aria-pressed={filter.kind === "human"}
+            onClick={() => onKind("human")}
+          >
+            <span>{t("Channel.filter.humans")}</span>
+          </button>
+          <button
+            className={"d-btn agent-filter-kind" + (filter.kind === "agent" ? " is-active" : "")}
+            type="button"
+            aria-pressed={filter.kind === "agent"}
+            onClick={() => onKind("agent")}
+          >
+            <span>{t("Channel.filter.agents")}</span>
           </button>
         </div>
         <span className="t-mono agent-filter-count">
@@ -547,7 +733,7 @@ function AgentFilterPanel({
         </span>
         {active && (
           <button className="d-btn agent-filter-clear" type="button" onClick={onClear}>
-            <span>Clear</span>
+            <span>{t("Channel.filter.clear")}</span>
           </button>
         )}
       </div>
@@ -587,6 +773,7 @@ function CatchupPanel({
   latestSeq: number;
   onCaughtUp: () => void;
 }) {
+  const t = useT();
   const chips = [
     `${digest.messages} new`,
     digest.mentions > 0 ? `${digest.mentions} @you` : null,
@@ -602,13 +789,13 @@ function CatchupPanel({
     <section className="catchup-panel" aria-label="while you were away">
       <div className="catchup-head">
         <div>
-          <h2 className="catchup-title">While you were away</h2>
+          <h2 className="catchup-title">{t("Channel.heading.catchup")}</h2>
           <p className="catchup-range t-mono">
             #{seenSeq + 1}..#{latestSeq}
           </p>
         </div>
         <button className="d-btn catchup-action" type="button" onClick={onCaughtUp}>
-          <span>Caught up</span>
+          <span>{t("Channel.caughtUp")}</span>
         </button>
       </div>
       <div className="catchup-chips t-mono">
@@ -667,17 +854,18 @@ function CompletionPanel({
   onToggle: () => void;
   onJump: (seq: number) => void;
 }) {
+  const t = useT();
   if (completions.length === 0) return null;
 
   return (
     <section className="completion-panel" aria-label="completion artifacts">
       <div className="completion-panel-head">
-        <h2 className="completion-title">Completions</h2>
+        <h2 className="completion-title">{t("Channel.heading.completions")}</h2>
         <span className="t-mono completion-count">
           {visible}/{completions.length}
         </span>
         <button className={"d-btn completion-toggle" + (enabled ? " is-active" : "")} type="button" onClick={onToggle}>
-          <span>{enabled ? "All" : "Only"}</span>
+          <span>{enabled ? t("Channel.filter.all") : t("Channel.filter.only")}</span>
         </button>
       </div>
       <ol className="completion-list">
@@ -704,6 +892,7 @@ function CompletionPanel({
 }
 
 function DecisionPanel({ messages }: { messages: MsgFrame[] }) {
+  const t = useT();
   const decisions = messages
     .filter((m) => m.kind === "status" && m.status?.decision !== undefined)
     .slice(-5)
@@ -713,7 +902,7 @@ function DecisionPanel({ messages }: { messages: MsgFrame[] }) {
   return (
     <section className="decision-panel" aria-label="host decisions">
       <div className="decision-panel-head">
-        <h2 className="decision-title">Host Decisions</h2>
+        <h2 className="decision-title">{t("Channel.heading.decisions")}</h2>
         <span className="t-mono decision-count">{decisions.length}</span>
       </div>
       <ol className="decision-list">
@@ -743,16 +932,19 @@ function DecisionPanel({ messages }: { messages: MsgFrame[] }) {
 }
 
 function TeamPanel({ teams }: { teams: TeamSummary[] }) {
+  const t = useT();
   if (teams.length === 0) return null;
 
   return (
     <section className="team-panel" aria-label="agent teams">
       <div className="team-panel-head">
-        <h2 className="team-title">Teams</h2>
+        <h2 className="team-title">{t("Channel.heading.teams")}</h2>
         <span className="t-mono team-count">{teams.length}</span>
       </div>
       <ol className="team-list">
         {teams.map((team) => {
+          const front = team.frontAgent;
+          const workerMembers = front === null ? team.members : team.members.filter((member) => member.name !== front.name);
           const meta = [
             `root: ${team.rootAgent}`,
             team.parentAgents.length === 1 ? `parent: ${team.parentAgents[0]}` : `${team.parentAgents.length} parents`,
@@ -764,6 +956,13 @@ function TeamPanel({ teams }: { teams: TeamSummary[] }) {
             <li key={team.key} className="team-item">
               <div className="team-item-head">
                 <span className="team-name">{team.teamId}</span>
+                <span
+                  className={"t-mono team-front" + (front?.active ? " is-active" : "")}
+                  title={front === null ? `front: ${team.rootAgent}` : `front: ${front.name} · state: ${front.state} · residency: ${front.residency}`}
+                >
+                  <span className={`d-dot d-dot--${front?.active ? front.state : "offline"}`} />
+                  front {front?.name ?? team.rootAgent}
+                </span>
                 <span className="t-mono team-active">
                   {team.activeCount}/{team.memberCount} active
                 </span>
@@ -773,7 +972,8 @@ function TeamPanel({ teams }: { teams: TeamSummary[] }) {
               </div>
               <div className="t-mono team-meta">{meta.join(" · ")}</div>
               <div className="team-members">
-                {team.members.map((member) => (
+                {workerMembers.length === 0 && <span className="t-mono team-member team-member--empty">no workers</span>}
+                {workerMembers.map((member) => (
                   <span
                     key={member.name}
                     className={"t-mono team-member" + (member.active ? " is-active" : "")}
@@ -800,12 +1000,13 @@ function TeamPanel({ teams }: { teams: TeamSummary[] }) {
 }
 
 function HostBoardPanel({ board }: { board: HostBoard }) {
+  const t = useT();
   if (board.hosts.length === 0 && board.recommended_actions.length === 0 && board.conflicts.length === 0) return null;
 
   return (
     <section className="host-board-panel" aria-label="host board">
       <div className="host-board-head">
-        <h2 className="host-board-title">Host Board</h2>
+        <h2 className="host-board-title">{t("Channel.heading.hostBoard")}</h2>
         <span className="t-mono host-board-count">#{board.last_seq}</span>
       </div>
       {board.recommended_actions.length > 0 && (
@@ -855,6 +1056,184 @@ function HostBoardPanel({ board }: { board: HostBoard }) {
   );
 }
 
+function TaskLedgerPanel({
+  tasks,
+  loading,
+  error,
+  canWrite,
+  busyTaskId,
+  actionError,
+  onRefresh,
+  onSetState,
+  onAssign,
+  onReview,
+}: {
+  tasks: TaskRecord[];
+  loading: boolean;
+  error: string | null;
+  canWrite: boolean;
+  busyTaskId: number | null;
+  actionError: string | null;
+  onRefresh: () => void;
+  onSetState: (id: number, state: TaskState) => void;
+  onAssign: (id: number, name: string, kind: TaskAssigneeKind) => void;
+  onReview: (task: TaskRecord, action: "approve" | "reject") => void;
+}) {
+  const [assignDrafts, setAssignDrafts] = useState<Record<number, string>>({});
+  const [assignKinds, setAssignKinds] = useState<Record<number, TaskAssigneeKind>>({});
+  const [dragTaskId, setDragTaskId] = useState<number | null>(null);
+  const counts = tasks.reduce<Record<string, number>>((acc, task) => {
+    acc[task.state] = (acc[task.state] ?? 0) + 1;
+    return acc;
+  }, {});
+  const tasksByState = new Map<TaskState, TaskRecord[]>(TASK_BOARD_STATES.map((state) => [state, []]));
+  for (const task of tasks) tasksByState.get(task.state)?.push(task);
+  const disabled = loading || !canWrite;
+  const renderTask = (task: TaskRecord) => {
+    const taskBusy = busyTaskId === task.id;
+    const assignDraft = assignDrafts[task.id] ?? task.assignee?.name ?? "";
+    const assignKind = assignKinds[task.id] ?? task.assignee?.kind ?? "agent";
+    const reviewSeq = taskCompletionSeq(task);
+    return (
+      <li
+        key={task.id}
+        className={"task-card" + (dragTaskId === task.id ? " is-dragging" : "")}
+        draggable={!disabled && !taskBusy}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", String(task.id));
+          setDragTaskId(task.id);
+        }}
+        onDragEnd={() => setDragTaskId(null)}
+      >
+        <div className="task-card-main">
+          <span className="t-mono task-id">#{task.id}</span>
+          <strong>{task.title}</strong>
+          <span className={`t-mono task-state task-state--${task.state}`}>{task.state}</span>
+        </div>
+        {task.desc !== null && <p>{task.desc}</p>}
+        <div className="task-card-meta">
+          <span className="t-mono">P{task.priority}</span>
+          {task.assignee !== null && <span className="t-mono">@{task.assignee.name}</span>}
+          {task.parent_id !== null && <span className="t-mono">parent #{task.parent_id}</span>}
+          {task.anchor_seqs.map((seq) => <span key={seq} className="t-mono">msg #{seq}</span>)}
+          {task.labels.map((label) => <span key={label} className="t-mono task-label">{label}</span>)}
+        </div>
+        <div className="task-card-actions">
+          <button className="task-action-btn" type="button" disabled={disabled || taskBusy || task.state === "in_progress"} onClick={() => onSetState(task.id, "in_progress")}>
+            Claim
+          </button>
+          <button className="task-action-btn" type="button" disabled={disabled || taskBusy || task.state === "blocked"} onClick={() => onSetState(task.id, "blocked")}>
+            Block
+          </button>
+          <button className="task-action-btn" type="button" disabled={disabled || taskBusy || task.state === "done"} onClick={() => onSetState(task.id, "done")}>
+            Done
+          </button>
+          {reviewSeq !== null && (
+            <>
+              <button className="task-action-btn task-action-btn--review" type="button" disabled={disabled || taskBusy} onClick={() => onReview(task, "approve")}>
+                Approve
+              </button>
+              <button className="task-action-btn" type="button" disabled={disabled || taskBusy} onClick={() => onReview(task, "reject")}>
+                Reject
+              </button>
+            </>
+          )}
+          <form
+            className="task-assign-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onAssign(task.id, assignDraft, assignKind);
+            }}
+          >
+            <input
+              aria-label={`Assign task ${task.id}`}
+              disabled={disabled || taskBusy}
+              value={assignDraft}
+              placeholder="@agent"
+              onChange={(event) => setAssignDrafts((current) => ({ ...current, [task.id]: event.currentTarget.value }))}
+            />
+            <select
+              aria-label={`Assignee kind for task ${task.id}`}
+              disabled={disabled || taskBusy}
+              value={assignKind}
+              onChange={(event) => setAssignKinds((current) => ({ ...current, [task.id]: event.currentTarget.value as TaskAssigneeKind }))}
+            >
+              <option value="agent">agent</option>
+              <option value="human">human</option>
+              <option value="squad">squad</option>
+            </select>
+            <button className="task-action-btn" type="submit" disabled={disabled || taskBusy || assignDraft.trim() === ""}>
+              Assign
+            </button>
+          </form>
+        </div>
+      </li>
+    );
+  };
+  return (
+    <section className="task-ledger-panel" aria-label="channel tasks">
+      <header className="task-ledger-head">
+        <div>
+          <h2>Tasks</h2>
+          <p className="t-mono">{tasks.length} total</p>
+        </div>
+        <button className="d-btn" type="button" disabled={loading} onClick={onRefresh}>
+          {loading ? "Refreshing" : "Refresh"}
+        </button>
+      </header>
+      {Object.keys(counts).length > 0 && (
+        <div className="task-ledger-counts">
+          {Object.entries(counts).map(([state, count]) => (
+            <span key={state} className={`t-mono task-state task-state--${state}`}>{state} {count}</span>
+          ))}
+        </div>
+      )}
+      {error !== null && <p className="banner banner--red">{error}</p>}
+      {actionError !== null && <p className="banner banner--red">{actionError}</p>}
+      {tasks.length === 0 && error === null ? (
+        <p className="charter-empty">No tasks yet. Use <code>party task create</code> to add one.</p>
+      ) : (
+        <div className="task-board" role="list" aria-label="task board columns">
+          {TASK_BOARD_STATES.map((state) => {
+            const columnTasks = tasksByState.get(state) ?? [];
+            return (
+              <section
+                key={state}
+                className={"task-column" + (dragTaskId !== null ? " task-column--drop" : "")}
+                aria-label={`${state} tasks`}
+                onDragOver={(event) => {
+                  if (dragTaskId !== null && !disabled) event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const rawId = event.dataTransfer.getData("text/plain");
+                  const id = Number.parseInt(rawId, 10);
+                  setDragTaskId(null);
+                  if (!Number.isInteger(id) || disabled) return;
+                  const task = tasks.find((item) => item.id === id);
+                  if (task === undefined || task.state === state) return;
+                  onSetState(id, state);
+                }}
+              >
+                <header className="task-column-head">
+                  <span className={`t-mono task-state task-state--${state}`}>{state}</span>
+                  <span className="t-mono task-column-count">{columnTasks.length}</span>
+                </header>
+                {columnTasks.length === 0 ? (
+                  <p className="t-mono task-column-empty">empty</p>
+                ) : (
+                  <ol className="task-list">{columnTasks.map(renderTask)}</ol>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function TeamThread({
   thread,
   self,
@@ -868,9 +1247,12 @@ function TeamThread({
   editSaving,
   actionError,
   busySeq,
+  messageBySeq,
   onReply,
   onEdit,
   onRetract,
+  canCreateTask,
+  onCreateTask,
   onEditDraftChange,
   onEditCancel,
   onEditSave,
@@ -887,9 +1269,13 @@ function TeamThread({
   editSaving: boolean;
   actionError: { seq: number; message: string } | null;
   busySeq: number | null;
+  // seq → 消息，用于把 reply_to 解析成完整的被引用消息（同一份 Map 从 ChannelPage 传下来，不在这里重建）
+  messageBySeq: Map<number, MsgFrame>;
   onReply: (seq: number) => void;
   onEdit: (seq: number) => void;
   onRetract: (seq: number) => void;
+  canCreateTask: boolean;
+  onCreateTask: (seq: number) => void;
   onEditDraftChange: (value: string) => void;
   onEditCancel: () => void;
   onEditSave: () => void;
@@ -927,9 +1313,12 @@ function TeamThread({
             readCursors={readCursors}
             participants={participants}
             canModerate={canModerate}
+            quotedMessage={message.reply_to !== null ? messageBySeq.get(message.reply_to) ?? null : null}
             onReply={onReply}
             onEdit={onEdit}
             onRetract={onRetract}
+            canCreateTask={canCreateTask}
+            onCreateTask={onCreateTask}
             editing={editingSeq === message.seq}
             editDraft={editingSeq === message.seq ? editDraft : message.body}
             editSaving={editSaving && editingSeq === message.seq}
@@ -950,6 +1339,10 @@ export function ChannelPage({
   token,
   mode,
   isPublic,
+  loopGuardEnabled,
+  loopGuardLimit,
+  workflowGuardEnabled,
+  workflowGuardLimit,
   shareMode,
   canMintAgent,
   canResetGuard,
@@ -957,6 +1350,7 @@ export function ChannelPage({
   agentNamePrefix,
   accountKey,
   inviterName,
+  selfHandle,
   onAuthFailed,
 }: Props) {
   const t = useT();
@@ -983,6 +1377,13 @@ export function ChannelPage({
   const [charterSaving, setCharterSaving] = useState(false);
   const [charterError, setCharterError] = useState<string | null>(null);
   const [channelRoles, setChannelRoles] = useState<ChannelRoleInfo[]>([]);
+  const [channelSquads, setChannelSquads] = useState<ChannelSquad[]>([]);
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [taskSummary, setTaskSummary] = useState<TaskSummary | null>(null);
+  const [tasksLoading, setTasksLoading] = useState(false);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [taskActionBusyId, setTaskActionBusyId] = useState<number | null>(null);
+  const [taskActionError, setTaskActionError] = useState<string | null>(null);
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({});
   const [newRoleName, setNewRoleName] = useState("");
   const [newRoleDraft, setNewRoleDraft] = useState<RoleDraft>({ role: "worker", responsibility: "" });
@@ -990,6 +1391,13 @@ export function ChannelPage({
   const [roleError, setRoleError] = useState<string | null>(null);
   const [seenCharterRev, setSeenCharterRev] = useState(() => readSeenCharterRev(slug));
   const [activePanel, setActivePanel] = useState<ChannelPanel | null>(null);
+  const [activeAdminSurface, setActiveAdminSurface] = useState<AdminSurface | null>(null);
+  const [localLoopGuardEnabled, setLocalLoopGuardEnabled] = useState(loopGuardEnabled);
+  const [localLoopGuardLimit, setLocalLoopGuardLimit] = useState(loopGuardLimit === null ? "" : String(loopGuardLimit));
+  const [localWorkflowGuardEnabled, setLocalWorkflowGuardEnabled] = useState(workflowGuardEnabled);
+  const [localWorkflowGuardLimit, setLocalWorkflowGuardLimit] = useState(String(workflowGuardLimit));
+  const [guardSaving, setGuardSaving] = useState<"loop" | "workflow" | null>(null);
+  const [guardConfigError, setGuardConfigError] = useState<string | null>(null);
   // 可见性可在会话内切换（issue #38 web），本地 state 让顶栏徽章即时反映，无需重载
   const [localPublic, setLocalPublic] = useState(isPublic);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -1003,12 +1411,45 @@ export function ChannelPage({
   const [editSaving, setEditSaving] = useState(false);
   const [messageActionError, setMessageActionError] = useState<{ seq: number; message: string } | null>(null);
   const [messageActionBusySeq, setMessageActionBusySeq] = useState<number | null>(null);
+  // 被@浏览器通知（Task C2）：opt-in 是全局 localStorage 设置，铃铛开关组件读/写；这里只持有一份
+  // 供 ws 入帧点判定用。optin/selfHandle/t 都放 ref：onFrame 挂在 socket 连接的 effect 里，
+  // 若把它们放进依赖数组，切铃铛/切语言会连累整个 ws 重连——用 ref 让判定读到最新值又不触发重连。
+  const [optin, setOptin] = useState<boolean>(() => readNotifyOptin());
+  const optinRef = useRef(optin);
+  optinRef.current = optin;
+  const selfHandleRef = useRef(selfHandle);
+  selfHandleRef.current = selfHandle;
+  const tRef = useRef(t);
+  tRef.current = t;
+  const notifiedSeqRef = useRef<Set<number>>(new Set()); // seq 去重：防同一帧被重复处理时重复弹通知
+  const toastedSeqRef = useRef<Set<number>>(new Set()); // seq 去重：页内 toast 同一帧只弹一次
+  const [toasts, setToasts] = useState<MentionToastItem[]>([]);
+  const dismissToast = useCallback((seq: number) => {
+    setToasts((cur) => cur.filter((tt) => tt.seq !== seq));
+  }, []);
+  const jumpToMention = useCallback((seq: number) => {
+    setToasts((cur) => cur.filter((tt) => tt.seq !== seq));
+    const el = document.getElementById(`msg-${seq}`);
+    if (el === null) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("msg-jump-highlight");
+    window.setTimeout(() => el.classList.remove("msg-jump-highlight"), 1200);
+  }, []);
   const sockRef = useRef<ChannelSocket | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const pendingSendsRef = useRef<Array<{ draft: string; replyTo: number | null }>>([]);
   const stickBottom = useRef(true);
   const authFailedRef = useRef(onAuthFailed);
   authFailedRef.current = onAuthFailed;
+
+  useEffect(() => {
+    setLocalLoopGuardEnabled(loopGuardEnabled);
+    setLocalLoopGuardLimit(loopGuardLimit === null ? "" : String(loopGuardLimit));
+    setLocalWorkflowGuardEnabled(workflowGuardEnabled);
+    setLocalWorkflowGuardLimit(String(workflowGuardLimit));
+    setGuardConfigError(null);
+    setGuardSaving(null);
+  }, [loopGuardEnabled, loopGuardLimit, slug, workflowGuardEnabled, workflowGuardLimit]);
   // IM 式加载：初始只拉最新一页、ws 从页尾游标接力；触顶上翻加载更早页
   const [bootstrapped, setBootstrapped] = useState(false); // 初始页已就绪，ws 才连
   const hasMoreRef = useRef(true); // 还有更早的历史可上翻
@@ -1046,6 +1487,130 @@ export function ChannelPage({
       });
   }, [slug, token, t]);
 
+  const loadSquads = useCallback(() => {
+    return fetchSquads(token, slug)
+      .then((squads) => {
+        setChannelSquads(squads);
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (!(err instanceof ForbiddenError)) setChannelSquads([]);
+      });
+  }, [slug, token]);
+
+  const loadTaskLedger = useCallback(() => {
+    setTasksLoading(true);
+    return Promise.all([fetchTasks(token, slug), fetchTaskSummary(token, slug)])
+      .then(([items, summary]) => {
+        setTasks(items);
+        setTaskSummary(summary);
+        setTasksError(null);
+        setTaskActionError(null);
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setTasksError("tasks are not visible for this channel");
+        else setTasksError("tasks failed to load");
+      })
+      .finally(() => setTasksLoading(false));
+  }, [slug, token]);
+
+  const loadTaskSummary = useCallback(() => {
+    return fetchTaskSummary(token, slug)
+      .then(setTaskSummary)
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+      });
+  }, [slug, token]);
+
+  const applyTaskUpdate = useCallback((id: number, body: Parameters<typeof updateTask>[3]) => {
+    if (taskActionBusyId !== null) return;
+    setTaskActionBusyId(id);
+    setTaskActionError(null);
+    updateTask(token, slug, id, body)
+      .then((task) => {
+        setTasks((current) => current.map((item) => item.id === task.id ? task : item));
+        void loadTaskSummary();
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setTaskActionError("task update is not allowed for this token");
+        else if (err instanceof ValidationError) setTaskActionError("task update was rejected");
+        else setTaskActionError("task update failed");
+      })
+      .finally(() => setTaskActionBusyId(null));
+  }, [loadTaskSummary, slug, taskActionBusyId, token]);
+
+  const setTaskState = useCallback((id: number, state: TaskState) => {
+    applyTaskUpdate(id, { state });
+  }, [applyTaskUpdate]);
+
+  const assignTask = useCallback((id: number, rawName: string, kind: TaskAssigneeKind) => {
+    const name = rawName.trim().replace(/^@/, "");
+    if (name === "") {
+      setTaskActionError("assignee is required");
+      return;
+    }
+    applyTaskUpdate(id, { state: "assigned", assignee: { name, kind } });
+  }, [applyTaskUpdate]);
+
+  const reviewTask = useCallback((task: TaskRecord, action: "approve" | "reject") => {
+    if (taskActionBusyId !== null) return;
+    const seq = taskCompletionSeq(task);
+    if (seq === null) {
+      setTaskActionError("task has no reviewable completion");
+      return;
+    }
+    const reason = action === "reject" ? window.prompt("Reject reason")?.trim() : undefined;
+    if (action === "reject" && !reason) return;
+    setTaskActionBusyId(task.id);
+    setTaskActionError(null);
+    reviewCompletion(
+      token,
+      slug,
+      seq,
+      action === "approve" ? { action: "approve" } : { action: "reject", reason: reason! },
+    )
+      .then(() => loadTaskLedger())
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setTaskActionError("review is not allowed for this token");
+        else if (err instanceof ValidationError) setTaskActionError("review was rejected");
+        else setTaskActionError("review failed");
+      })
+      .finally(() => setTaskActionBusyId(null));
+  }, [loadTaskLedger, slug, taskActionBusyId, token]);
+
+  useEffect(() => {
+    void loadTaskSummary();
+  }, [loadTaskSummary]);
+
+  const createTaskFromMessage = useCallback((seq: number) => {
+    if (messageActionBusySeq !== null) return;
+    const message = state.messages.find((item) => item.seq === seq);
+    if (message === undefined || message.kind !== "message" || message.retracted) return;
+    setMessageActionBusySeq(seq);
+    setMessageActionError(null);
+    createTask(token, slug, {
+      title: compactTaskTitle(message.body, `${message.sender.name} message #${message.seq}`),
+      anchor_seqs: [message.seq],
+    })
+      .then((task) => {
+        setTasks((current) => current.some((item) => item.id === task.id) ? current : [task, ...current]);
+        void loadTaskSummary();
+        setTasksError(null);
+        setActiveAdminSurface(null);
+        setActivePanel("tasks");
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setMessageActionError({ seq, message: "task creation is not allowed for this token" });
+        else if (err instanceof ValidationError) setMessageActionError({ seq, message: "task creation was rejected" });
+        else setMessageActionError({ seq, message: "task creation failed" });
+      })
+      .finally(() => setMessageActionBusySeq(null));
+  }, [loadTaskSummary, messageActionBusySeq, slug, state.messages, token]);
+
   const removeParticipant = useCallback((name: string) => {
     if (removingName !== null) return;
     setRemovingName(name);
@@ -1082,7 +1647,8 @@ export function ChannelPage({
     setCharterEditing(false);
     void loadCharter();
     void loadRoles();
-  }, [loadCharter, loadRoles, slug]);
+    void loadSquads();
+  }, [loadCharter, loadRoles, loadSquads, slug]);
 
   useEffect(() => {
     let alive = true;
@@ -1159,6 +1725,46 @@ export function ChannelPage({
             if ((frame.type === "msg" || frame.type === "status") && frame.seq < floor) return;
             if (frame.type === "message_update" && frame.message.seq < floor) return;
           }
+          // 被@浏览器通知（Task C2）：每条 ws 入帧只处理一次，天然按 seq 去重；notifiedSeqRef 兜底
+          // 防万一同一帧被重复送进这个回调（例如未来重连语义变化）时重复弹窗。
+          if (
+            frame.type === "msg" &&
+            !notifiedSeqRef.current.has(frame.seq) &&
+            shouldNotify(
+              frame,
+              selfHandleRef.current,
+              document.hidden,
+              optinRef.current && typeof Notification !== "undefined" && Notification.permission === "granted",
+            )
+          ) {
+            notifiedSeqRef.current.add(frame.seq);
+            const n = new Notification(tRef.current("Channel.notify.title", { channel: slug }), {
+              body: summarizeReplyPreview(frame.body),
+            });
+            n.onclick = () => {
+              window.focus();
+              window.location.hash = `#msg-${frame.seq}`;
+              n.close();
+            };
+          }
+          // 被@页内 toast（聚焦态）：与上面的系统通知按 document.hidden 互斥，各自 seq 去重
+          if (
+            frame.type === "msg" &&
+            !toastedSeqRef.current.has(frame.seq) &&
+            shouldToast(frame, selfHandleRef.current, document.hidden, optinRef.current)
+          ) {
+            toastedSeqRef.current.add(frame.seq);
+            setToasts((cur) =>
+              [
+                ...cur,
+                {
+                  seq: frame.seq,
+                  sender: frame.sender, // 存原始 sender，渲染时用 resolveSenderLabel 解析，与消息卡显示保持一致
+                  body: summarizeReplyPreview(frame.body),
+                },
+              ].slice(-3),
+            );
+          }
           dispatch({ type: "frame", frame });
         },
         onStatus: (status) => dispatch({ type: "status", status }),
@@ -1192,6 +1798,7 @@ export function ChannelPage({
     const url = new URL(window.location.href);
     url.searchParams.delete("agent");
     url.searchParams.delete("agentMode");
+    url.searchParams.delete("agentKind");
     const filterSearch = agentFilterSearch(agentFilter);
     if (filterSearch !== "") {
       const params = new URLSearchParams(filterSearch);
@@ -1344,12 +1951,19 @@ export function ChannelPage({
   }, [lastSeq, seenKey]);
 
   const openPanel = useCallback((panel: ChannelPanel) => {
+    setActiveAdminSurface(null);
     if (panel === "charter" && charter !== null) {
       writeSeenCharterRev(slug, charter.charter_rev);
       setSeenCharterRev(charter.charter_rev);
     }
+    if (panel === "tasks") void loadTaskLedger();
     setActivePanel(panel);
-  }, [charter, slug]);
+  }, [charter, loadTaskLedger, slug]);
+
+  const setAdminSurface = useCallback((surface: AdminSurface, open: boolean) => {
+    setActivePanel(null);
+    setActiveAdminSurface(open ? surface : null);
+  }, []);
 
   const editCharter = useCallback(() => {
     setCharterEditing(true);
@@ -1383,6 +1997,52 @@ export function ChannelPage({
       })
       .finally(() => setCharterSaving(false));
   }, [charterDraft, charterSaving, slug, token]);
+
+  const saveLoopGuard = useCallback(() => {
+    if (guardSaving !== null) return;
+    const limit = Number(localLoopGuardLimit);
+    if (localLoopGuardEnabled && (!Number.isInteger(limit) || limit < 1 || limit > 10_000)) {
+      setGuardConfigError(t("Channel.settings.invalidLoop"));
+      return;
+    }
+    setGuardSaving("loop");
+    setGuardConfigError(null);
+    setLoopGuard(token, slug, localLoopGuardEnabled, localLoopGuardEnabled ? limit : undefined)
+      .then((result) => {
+        setLocalLoopGuardEnabled(result.enabled);
+        setLocalLoopGuardLimit(result.limit === null ? "" : String(result.limit));
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setGuardConfigError(t("Channel.settings.forbidden"));
+        else if (err instanceof ValidationError) setGuardConfigError(t("Channel.settings.invalidLoop"));
+        else setGuardConfigError(t("Channel.settings.saveFailed"));
+      })
+      .finally(() => setGuardSaving(null));
+  }, [guardSaving, localLoopGuardEnabled, localLoopGuardLimit, slug, t, token]);
+
+  const saveWorkflowGuard = useCallback(() => {
+    if (guardSaving !== null) return;
+    const limit = Number(localWorkflowGuardLimit);
+    if (localWorkflowGuardEnabled && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) {
+      setGuardConfigError(t("Channel.settings.invalidWorkflow"));
+      return;
+    }
+    setGuardSaving("workflow");
+    setGuardConfigError(null);
+    setWorkflowGuard(token, slug, localWorkflowGuardEnabled, localWorkflowGuardEnabled ? limit : undefined)
+      .then((result) => {
+        setLocalWorkflowGuardEnabled(result.enabled);
+        setLocalWorkflowGuardLimit(String(result.limit ?? limit));
+      })
+      .catch((err: unknown) => {
+        if (err instanceof AuthError) authFailedRef.current("token revoked — paste a new one");
+        else if (err instanceof ForbiddenError) setGuardConfigError(t("Channel.settings.forbidden"));
+        else if (err instanceof ValidationError) setGuardConfigError(t("Channel.settings.invalidWorkflow"));
+        else setGuardConfigError(t("Channel.settings.saveFailed"));
+      })
+      .finally(() => setGuardSaving(null));
+  }, [guardSaving, localWorkflowGuardEnabled, localWorkflowGuardLimit, slug, t, token]);
 
   const updateRoleDraft = useCallback((name: string, next: RoleDraft) => {
     setRoleDrafts((current) => ({ ...current, [name]: next }));
@@ -1548,10 +2208,14 @@ export function ChannelPage({
       ...state.participants.map((p) => p.name),
       ...Object.keys(state.presence),
       ...channelRoles.map((role) => role.name),
+      ...channelSquads.map((squad) => squad.name),
       ...state.messages.map((m) => m.sender.name),
     ]),
   ].sort((a, b) => a.localeCompare(b));
   const senderListId = `senders-${slug}`;
+  // seq → 消息：给引用预览用，把 reply_to 解析成完整消息（含发送者/正文/撤回状态）而不止一个编号。
+  // 只在已加载窗口内查得到——超出 MESSAGE_CAP 或翻页边界外的历史引用会查不到，MessageCard 侧降级回纯编号。
+  const messageBySeq = useMemo(() => new Map(state.messages.map((m) => [m.seq, m])), [state.messages]);
   const completions = useMemo(() => completionMessages(state.messages), [state.messages]);
   const timelineMessages = completionOnly ? completions : state.messages;
   const visibleMessages = useMemo(() => filterByAgent(timelineMessages, agentFilter), [agentFilter, timelineMessages]);
@@ -1577,8 +2241,8 @@ export function ChannelPage({
   );
   // @ 补全候选：participants ∪ presence，分档（在线/可唤醒/最近）。teamNow 30s 刷新驱动 stale 判定。
   const mentionOptions = useMemo(
-    () => mentionCandidates(state.participants, state.presence, state.self, teamNow, channelIdentities, channelRoles),
-    [channelIdentities, channelRoles, state.participants, state.presence, state.self, teamNow],
+    () => mentionCandidates(state.participants, state.presence, state.self, teamNow, channelIdentities, channelRoles, channelSquads),
+    [channelIdentities, channelRoles, channelSquads, state.participants, state.presence, state.self, teamNow],
   );
   const identityDisplay = useMemo(
     () =>
@@ -1597,8 +2261,10 @@ export function ChannelPage({
     for (const p of state.participants) kind.set(p.name, p.kind);
     for (const [name, p] of Object.entries(state.presence)) if (!kind.has(name) && p.kind) kind.set(name, p.kind);
     for (const m of state.messages) if (!kind.has(m.sender.name)) kind.set(m.sender.name, m.sender.kind);
+    for (const identity of channelIdentities) if (!kind.has(identity.name) && identity.kind) kind.set(identity.name, identity.kind);
+    for (const role of channelRoles) if (!kind.has(role.name) && role.kind) kind.set(role.name, role.kind);
     return (name: string): boolean => kind.get(name) === "agent";
-  }, [state.participants, state.presence, state.messages]);
+  }, [channelIdentities, channelRoles, state.participants, state.presence, state.messages]);
   // 发送后回执：seq → 每个被 @ 的 agent 目标的状态（已回复/已唤醒/唤醒失败/在线已送达/待唤醒/待重连）。
   const receiptsBySeq = useMemo(
     () =>
@@ -1615,14 +2281,22 @@ export function ChannelPage({
   // 发送前状态条：草稿里已 @ 的、且在频道里认得的目标 + 当前存活档位。
   const draftMentionStatuses = useMemo<DraftMentionStatus[]>(() => {
     const online = new Set(state.participants.map((p) => p.name));
-    const known = new Set<string>([...online, ...Object.keys(state.presence)]);
+    const known = new Set<string>([
+      ...online,
+      ...Object.keys(state.presence),
+      ...channelIdentities.map((identity) => identity.name),
+      ...channelRoles.map((role) => role.name),
+      ...channelSquads.map((squad) => squad.name),
+    ]);
     return parseDraftMentions(draft)
       .filter((name) => known.has(name) && name !== state.self)
       .map((name) => {
+        const squad = channelSquads.find((item) => item.name === name);
+        if (squad) return { name, display: squad.title ?? squad.name, tier: "wakeable", wakeKind: "webhook" };
         const live = mentionLiveness(name, online, state.presence, teamNow);
         return { name, display: identityDisplay[name]?.display ?? name, tier: live.tier, wakeKind: live.wakeKind };
       });
-  }, [draft, state.participants, state.presence, state.self, teamNow, identityDisplay]);
+  }, [channelIdentities, channelRoles, channelSquads, draft, state.participants, state.presence, state.self, teamNow, identityDisplay]);
   // 轮询 @ 唤醒台账（仅 webhook 侧有行；serve/watch 靠 presence + 回复链接补齐）。用 ref 保持 7s 稳定
   // 间隔，不因每条新消息重挂定时器；标签页隐藏或频道无 agent @ 时跳过，端点失败也不影响其余回执渲染。
   const messagesRef = useRef(state.messages);
@@ -1655,10 +2329,14 @@ export function ChannelPage({
       window.clearInterval(id);
     };
   }, [token, slug, shareMode]);
-  const agentFilterActive = agentFilter.agents.length > 0;
+  const agentFilterActive = agentFilter.agents.length > 0 || agentFilter.kind !== null;
   const totalInView = q === "" ? timelineMessages.length : searchHits.length;
   const visibleInView = q === "" ? visibleMessages.length : visibleSearchHits.length;
   const structuredRoleCount = channelRoles.length + selfReportedRoles(channelRoles, state.presence, channelIdentities).length;
+  const taskOpenCount = taskSummary?.open ?? tasks.filter((task) => task.state !== "done").length;
+  const taskReviewCount = taskSummary?.needs_review ?? tasks.filter((task) => task.state === "needs_review").length;
+  const taskBlockedCount = taskSummary?.blocked ?? tasks.filter((task) => task.state === "blocked").length;
+  const taskMineCount = taskSummary?.mine ?? 0;
 
   const setAgentMode = useCallback((mode: AgentFilterMode) => {
     setAgentFilter((current) => ({ ...current, mode }));
@@ -1668,8 +2346,12 @@ export function ChannelPage({
     setAgentFilter((current) => toggleAgent(current, agent));
   }, []);
 
+  const setAgentKind = useCallback((kind: AgentFilterKind) => {
+    setAgentFilter((current) => setKind(current, kind));
+  }, []);
+
   const clearAgentFilter = useCallback(() => {
-    setAgentFilter((current) => ({ ...current, agents: [] }));
+    setAgentFilter((current) => ({ ...current, agents: [], kind: null }));
   }, []);
 
   const jumpToCompletion = useCallback((seq: number) => {
@@ -1753,6 +2435,7 @@ export function ChannelPage({
           total={totalInView}
           onMode={setAgentMode}
           onToggle={toggleAgentFilter}
+          onKind={setAgentKind}
           onClear={clearAgentFilter}
         />
       )}
@@ -1781,16 +2464,16 @@ export function ChannelPage({
           spellCheck={false}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("Channel.search.placeholder")}
-          aria-label="search messages"
+          aria-label={t("Channel.search.aria")}
           autoFocus
         />
         {q !== "" && (
           <span className="t-mono chan-search-count">
             {searchLoading
-              ? "searching"
+              ? t("Channel.search.searching")
               : agentFilterActive
-                ? `${visibleSearchHits.length}/${searchHits.length} hits`
-                : `${searchHits.length} hits`}
+                ? t("Channel.search.hitsFiltered", { visible: visibleSearchHits.length, total: searchHits.length })
+                : t("Channel.search.hits", { count: searchHits.length })}
           </span>
         )}
       </div>
@@ -1802,8 +2485,8 @@ export function ChannelPage({
             spellCheck={false}
             list={senderListId}
             onChange={(e) => setSearchFrom(e.target.value)}
-            placeholder="from agent"
-            aria-label="search sender filter"
+            placeholder={t("Channel.search.fromPlaceholder")}
+            aria-label={t("Channel.search.fromAria")}
           />
           <datalist id={senderListId}>
             {knownSenders.map((name) => (
@@ -1817,8 +2500,8 @@ export function ChannelPage({
             step={1}
             value={searchSince}
             onChange={(e) => setSearchSince(e.target.value)}
-            placeholder="since seq"
-            aria-label="search since sequence"
+            placeholder={t("Channel.search.sincePlaceholder")}
+            aria-label={t("Channel.search.sinceAria")}
           />
           <input
             className="t-mono chan-filter-input chan-filter-input--short"
@@ -1828,8 +2511,8 @@ export function ChannelPage({
             step={1}
             value={searchLimit}
             onChange={(e) => setSearchLimit(e.target.value)}
-            placeholder="limit"
-            aria-label="search result limit"
+            placeholder={t("Channel.search.limitPlaceholder")}
+            aria-label={t("Channel.search.limitAria")}
           />
         </div>
       )}
@@ -1838,6 +2521,13 @@ export function ChannelPage({
 
   return (
     <div className="chan">
+      <MentionToast
+        items={toasts}
+        channel={slug}
+        identityDisplay={identityDisplay}
+        onJump={jumpToMention}
+        onDismiss={dismissToast}
+      />
       <PresenceBar
         presence={state.presence}
         participants={state.participants}
@@ -1858,69 +2548,110 @@ export function ChannelPage({
             className={"d-btn chan-tool-btn" + (charterUpdated ? " chan-tool-btn--updated" : "")}
             onClick={() => openPanel("charter")}
           >
+            <span className="ap-sprite ap-sprite--announcement" aria-hidden="true" />
             <span>{t("Channel.tools.charter")}</span>
             {charter !== null && <span className="t-mono chan-tool-badge">rev {charter.charter_rev}</span>}
             {charterUpdated && <span className="t-mono chan-tool-badge chan-tool-badge--hot">{t("Channel.tools.updated")}</span>}
           </button>
           <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("roles")}>
+            <span className="ap-sprite ap-sprite--division" aria-hidden="true" />
             <span>{t("Channel.tools.roles")}</span>
             <span className="t-mono chan-tool-badge">{structuredRoleCount}</span>
           </button>
           <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("coordination")}>
+            <span className="ap-sprite ap-sprite--coordination" aria-hidden="true" />
             <span>{t("Channel.tools.coordination")}</span>
             {(agentFilterActive || completionOnly) && (
               <span className="t-mono chan-tool-badge chan-tool-badge--hot">{t("Channel.tools.active")}</span>
             )}
           </button>
+          <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("tasks")}>
+            <span className="ap-sprite ap-sprite--tasks" aria-hidden="true" />
+            <span>Tasks</span>
+            <span className="t-mono chan-tool-badge">{taskOpenCount}</span>
+          </button>
+          {(taskOpenCount > 0 || taskReviewCount > 0 || taskBlockedCount > 0 || taskMineCount > 0) && (
+            <div className="task-strip-summary" aria-label="task summary">
+              <span className="t-mono chan-tool-badge">open {taskOpenCount}</span>
+              {taskReviewCount > 0 && <span className="t-mono chan-tool-badge chan-tool-badge--hot">review {taskReviewCount}</span>}
+              {taskBlockedCount > 0 && <span className="t-mono chan-tool-badge task-strip-summary--blocked">blocked {taskBlockedCount}</span>}
+              {taskMineCount > 0 && <span className="t-mono chan-tool-badge">mine {taskMineCount}</span>}
+            </div>
+          )}
           <button type="button" className={"d-btn chan-tool-btn" + (q !== "" ? " is-active" : "")} onClick={() => openPanel("search")}>
+            <span className="ap-sprite ap-sprite--search" aria-hidden="true" />
             <span>{t("Channel.tools.search")}</span>
             {q !== "" && <span className="t-mono chan-tool-badge">{searchLoading ? "..." : searchHits.length}</span>}
           </button>
-        </div>
-        {(canMintAgent || canModerate) && !state.archived && (
-          <div className="chan-admin-actions">
-          {canMintAgent && accountKey !== null && (
-            <AgentJoin
-              slug={slug}
-              token={token}
-              namePrefix={agentNamePrefix}
-              inviterName={inviterName}
-              charter={charter}
-              accountKey={accountKey}
-            />
-          )}
-          {canMintAgent && accountKey !== null && (
-            <AgentTokens
-              slug={slug}
-              token={token}
-              accountKey={accountKey}
-              inviterName={inviterName}
-              onAuthFailed={onAuthFailed}
-            />
-          )}
           {canModerate && (
-            <VisibilityToggle
-              slug={slug}
-              token={token}
-              isPublic={localPublic}
-              onChanged={setLocalPublic}
-              onAuthFailed={onAuthFailed}
-            />
-          )}
-          {canModerate && <JoinLink slug={slug} token={token} onAuthFailed={onAuthFailed} />}
-          {canModerate && (
-            <button
-              type="button"
-              className="d-btn archive-channel-btn"
-              disabled={archiving}
-              onClick={archiveCurrentChannel}
-              title={t("Channel.archive.buttonTitle")}
-            >
-              {archiving ? t("Channel.archive.archiving") : t("Channel.archive.button")}
+            <button type="button" className="d-btn chan-tool-btn" onClick={() => openPanel("settings")}>
+              <span className="ap-sprite ap-sprite--settings" aria-hidden="true" />
+              <span>{t("Channel.tools.settings")}</span>
+              <span className="t-mono chan-tool-badge">
+                {localLoopGuardEnabled ? localLoopGuardLimit : t("Channel.settings.unlimited")}
+              </span>
             </button>
           )}
-          </div>
-        )}
+        </div>
+        <div className="chan-tool-actions">
+          <NotifyToggle optin={optin} onChange={setOptin} />
+          {(canMintAgent || canModerate) && !state.archived && (
+            <div className="chan-admin-actions">
+              {canMintAgent && accountKey !== null && (
+                <AgentJoin
+                  slug={slug}
+                  token={token}
+                  namePrefix={agentNamePrefix}
+                  inviterName={inviterName}
+                  charter={charter}
+                  accountKey={accountKey}
+                  active={activeAdminSurface === "agentJoin"}
+                  onActiveChange={(open) => setAdminSurface("agentJoin", open)}
+                />
+              )}
+              {canMintAgent && accountKey !== null && (
+                <AgentTokens
+                  slug={slug}
+                  token={token}
+                  accountKey={accountKey}
+                  inviterName={inviterName}
+                  onAuthFailed={onAuthFailed}
+                  active={activeAdminSurface === "agentTokens"}
+                  onActiveChange={(open) => setAdminSurface("agentTokens", open)}
+                />
+              )}
+              {canModerate && (
+                <VisibilityToggle
+                  slug={slug}
+                  token={token}
+                  isPublic={localPublic}
+                  onChanged={setLocalPublic}
+                  onAuthFailed={onAuthFailed}
+                />
+              )}
+              {canModerate && (
+                <JoinLink
+                  slug={slug}
+                  token={token}
+                  onAuthFailed={onAuthFailed}
+                  active={activeAdminSurface === "joinLink"}
+                  onActiveChange={(open) => setAdminSurface("joinLink", open)}
+                />
+              )}
+              {canModerate && (
+                <button
+                  type="button"
+                  className="d-btn archive-channel-btn"
+                  disabled={archiving}
+                  onClick={archiveCurrentChannel}
+                  title={t("Channel.archive.buttonTitle")}
+                >
+                  {archiving ? t("Channel.archive.archiving") : t("Channel.archive.button")}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       {activePanel !== null && (
         <ChannelPanelModal
@@ -1928,12 +2659,16 @@ export function ChannelPage({
             activePanel === "charter" ? t("Channel.tools.charter") :
             activePanel === "roles" ? t("Channel.tools.roles") :
             activePanel === "coordination" ? t("Channel.tools.coordination") :
+            activePanel === "tasks" ? "Tasks" :
+            activePanel === "settings" ? t("Channel.tools.settings") :
             t("Channel.tools.search")
           }
           subtitle={
             activePanel === "charter" && charter !== null ? `rev ${charter.charter_rev}` :
             activePanel === "roles" ? t("Channel.roles.count", { count: String(structuredRoleCount) }) :
-            activePanel === "search" && q !== "" ? `${searchHits.length} hits` :
+            activePanel === "tasks" ? `${taskOpenCount} open · ${taskReviewCount} review · ${taskBlockedCount} blocked` :
+            activePanel === "settings" ? (localLoopGuardEnabled ? t("Channel.settings.enabled") : t("Channel.settings.unlimited")) :
+            activePanel === "search" && q !== "" ? t("Channel.search.hits", { count: searchHits.length }) :
             undefined
           }
           onClose={() => setActivePanel(null)}
@@ -1959,6 +2694,7 @@ export function ChannelPage({
           {activePanel === "roles" && (
             <DivisionBoard
               canModerate={canModerate}
+              slug={slug}
               roles={channelRoles}
               roleDrafts={roleDrafts}
               roleError={roleError}
@@ -1976,6 +2712,37 @@ export function ChannelPage({
             />
           )}
           {activePanel === "coordination" && coordinationContent}
+          {activePanel === "tasks" && (
+            <TaskLedgerPanel
+              tasks={tasks}
+              loading={tasksLoading}
+              error={tasksError}
+              canWrite={canWrite}
+              busyTaskId={taskActionBusyId}
+              actionError={taskActionError}
+              onRefresh={loadTaskLedger}
+              onSetState={setTaskState}
+              onAssign={assignTask}
+              onReview={reviewTask}
+            />
+          )}
+          {activePanel === "settings" && (
+            <GuardSettingsPanel
+              canModerate={canModerate}
+              loopEnabled={localLoopGuardEnabled}
+              loopLimit={localLoopGuardLimit}
+              workflowEnabled={localWorkflowGuardEnabled}
+              workflowLimit={localWorkflowGuardLimit}
+              saving={guardSaving}
+              error={guardConfigError}
+              onLoopEnabled={setLocalLoopGuardEnabled}
+              onLoopLimit={setLocalLoopGuardLimit}
+              onWorkflowEnabled={setLocalWorkflowGuardEnabled}
+              onWorkflowLimit={setLocalWorkflowGuardLimit}
+              onSaveLoop={saveLoopGuard}
+              onSaveWorkflow={saveWorkflowGuard}
+            />
+          )}
           {activePanel === "search" && searchContent}
         </ChannelPanelModal>
       )}
@@ -1993,9 +2760,12 @@ export function ChannelPage({
                   readCursors={state.readCursors}
                   participants={state.participants}
                   canModerate={canModerate}
+                  quotedMessage={item.message.reply_to !== null ? messageBySeq.get(item.message.reply_to) ?? null : null}
                   onReply={startReply}
                   onEdit={startEdit}
                   onRetract={retractMessage}
+                  canCreateTask={canWrite}
+                  onCreateTask={createTaskFromMessage}
                   editing={editingSeq === item.message.seq}
                   editDraft={editingSeq === item.message.seq ? editDraft : item.message.body}
                   editSaving={editSaving && editingSeq === item.message.seq}
@@ -2020,9 +2790,12 @@ export function ChannelPage({
                   editSaving={editSaving}
                   actionError={messageActionError}
                   busySeq={messageActionBusySeq}
+                  messageBySeq={messageBySeq}
                   onReply={startReply}
                   onEdit={startEdit}
                   onRetract={retractMessage}
+                  canCreateTask={canWrite}
+                  onCreateTask={createTaskFromMessage}
                   onEditDraftChange={setEditDraft}
                   onEditCancel={cancelEdit}
                   onEditSave={saveEdit}
@@ -2037,7 +2810,7 @@ export function ChannelPage({
         )}
         {state.messages.length > 0 && q === "" && visibleMessages.length === 0 && (
           <p className="d-empty" role="status" aria-live="polite">
-            {completionOnly ? "no completion artifacts match selected agents" : "no messages match selected agents"}
+            {completionOnly ? t("Channel.empty.completionsFiltered") : t("Channel.empty.messagesFiltered")}
           </p>
         )}
         {q !== "" && !searchLoading && searchHits.length === 0 && searchInputError === null && searchError === null && (
@@ -2047,7 +2820,7 @@ export function ChannelPage({
         )}
         {q !== "" && !searchLoading && searchHits.length > 0 && visibleSearchHits.length === 0 && (
           <p className="d-empty" role="status" aria-live="polite">
-            no search hits match selected agents
+            {t("Channel.empty.searchFiltered")}
           </p>
         )}
       </div>

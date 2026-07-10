@@ -1,10 +1,39 @@
 import { spawnSync } from "node:child_process";
 
 const database = process.env.AGENTPARTY_D1_DATABASE ?? "agentparty";
+const wranglerConfig = process.env.AGENTPARTY_WRANGLER_CONFIG;
 
 const required = {
-  channels: ["id", "slug", "title", "topic", "kind", "mode", "created_by", "created_at", "archived_at"],
+  channels: [
+    "id",
+    "slug",
+    "title",
+    "topic",
+    "kind",
+    "mode",
+    "created_by",
+    "created_at",
+    "archived_at",
+    "charter_write_policy",
+    "charter_write_agents",
+    "charter_write_agent_allowlist_json",
+    "members_list_policy",
+    "members_list_agents",
+    "members_list_agent_allowlist_json",
+  ],
   tokens: ["id", "hash", "name", "role", "owner", "created_at", "revoked_at"],
+  account_profiles: [
+    "account",
+    "handle",
+    "display_name",
+    "avatar_url",
+    "avatar_thumb",
+    "provider",
+    "provider_user_id",
+    "tenant_key",
+    "created_at",
+    "updated_at",
+  ],
   captures: [
     "id",
     "channel_slug",
@@ -20,18 +49,63 @@ const required = {
     "message_body",
     "message_ts",
   ],
+  channel_tasks: [
+    "id",
+    "channel_slug",
+    "title",
+    "description",
+    "state",
+    "assignee_name",
+    "assignee_kind",
+    "created_by",
+    "created_by_kind",
+    "created_by_owner",
+    "priority",
+    "labels_json",
+    "parent_id",
+    "anchor_seqs_json",
+    "completion_artifact_json",
+    "workflow_id",
+    "created_at",
+    "updated_at",
+    "completed_at",
+  ],
   channel_roles: ["channel_slug", "agent_name", "role", "assigned_by", "assigned_at"],
+  agent_profiles: [
+    "owner_account",
+    "handle",
+    "name",
+    "runner",
+    "repo_url",
+    "workdir",
+    "base_branch",
+    "worktree_strategy",
+    "rules",
+    "invitable_by",
+    "created_at",
+    "updated_at",
+  ],
+  channel_agent_invites: [
+    "id",
+    "channel_slug",
+    "owner_account",
+    "profile_handle",
+    "invited_by",
+    "invited_at",
+    "revoked_at",
+  ],
 };
 
 function run(args) {
-  const res = spawnSync("wrangler-accounts", args, {
+  const commandArgs = wranglerConfig ? [...args, "--config", wranglerConfig] : args;
+  const res = spawnSync("wrangler-accounts", commandArgs, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (res.status !== 0) {
     process.stderr.write(res.stdout);
     process.stderr.write(res.stderr);
-    throw new Error(`wrangler-accounts ${args.join(" ")} failed`);
+    throw new Error(`wrangler-accounts ${commandArgs.join(" ")} failed`);
   }
   return `${res.stdout}${res.stderr}`;
 }

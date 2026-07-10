@@ -48,6 +48,8 @@ export type ChannelMode = "normal" | "party";
 export type MessageKind = "message" | "status";
 export type WebhookFilter = "mentions" | "status" | "needs-human" | "all";
 export type CaptureKind = "decision" | "requirement" | "bug" | "action-item";
+export type TaskState = "triage" | "backlog" | "assigned" | "in_progress" | "needs_review" | "done" | "blocked";
+export type TaskAssigneeKind = "agent" | "human" | "squad";
 
 export type StatusState = "working" | "waiting" | "blocked" | "done";
 export type PresenceState = StatusState | "offline";
@@ -144,6 +146,57 @@ export interface CaptureRecord {
   };
 }
 
+export interface TaskRecord {
+  type: "task";
+  id: number;
+  channel: string;
+  title: string;
+  desc: string | null;
+  state: TaskState;
+  assignee: { name: string; kind: TaskAssigneeKind } | null;
+  created_by: string;
+  created_by_kind: SenderKind;
+  created_by_owner?: string;
+  priority: number;
+  labels: string[];
+  parent_id: number | null;
+  anchor_seqs: number[];
+  completion_artifact: unknown | null;
+  workflow_id: string | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+}
+
+export interface TaskSummary {
+  type: "task_summary";
+  channel: string;
+  total: number;
+  open: number;
+  triage: number;
+  backlog: number;
+  assigned: number;
+  in_progress: number;
+  needs_review: number;
+  blocked: number;
+  done: number;
+  mine: number;
+}
+
+export interface ChannelSquad {
+  type: "squad";
+  channel: string;
+  name: string;
+  title: string | null;
+  description: string | null;
+  leader: string | null;
+  members: string[];
+  created_by: string;
+  created_by_kind: SenderKind;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AgentLineage {
   parent_agent: string;
   root_agent: string;
@@ -182,6 +235,13 @@ export interface Sender {
   /** 所属人：机器 ap_ token 铸造时写入的标签，人类 OIDC token 为其 email。无则省略（旧客户端忽略） */
   owner?: string;
   lineage?: AgentLineage;
+  /** 人类全局唯一昵称（可@别名）。仅人类且已设置时下发；agent/未设置省略。旧客户端忽略。 */
+  handle?: string;
+  /** OAuth/SSO profile display name. Optional; clients fall back to handle/owner/name. */
+  display_name?: string;
+  /** OAuth/SSO profile avatar URL. Optional; clients may render initials when absent. */
+  avatar_url?: string;
+  avatar_thumb?: string;
   /** 同一身份当前活跃连接数。仅 >1 时下发，用于提示 token/session 被重复使用。 */
   connection_count?: number;
 }
@@ -205,6 +265,13 @@ export interface PresenceEntry {
   wake?: WakeInfo;
   context?: AgentContext;
   lineage?: AgentLineage;
+  /** 人类全局唯一昵称（可@别名）。仅人类且已设置时下发；旧客户端忽略。 */
+  handle?: string;
+  /** OAuth/SSO profile display name. Optional; clients fall back to handle/account/name. */
+  display_name?: string;
+  /** OAuth/SSO profile avatar URL. Optional; clients may render initials when absent. */
+  avatar_url?: string;
+  avatar_thumb?: string;
   /** 同一身份当前活跃连接数。仅 >1 时下发，用于提示 token/session 被重复使用。 */
   connection_count?: number;
 }
@@ -230,6 +297,25 @@ export interface HostLeaseEvaluation {
 
 export function presenceLastSeen(entry: Pick<PresenceEntry, "last_seen" | "ts">): number | null {
   return entry.last_seen ?? entry.ts ?? null;
+}
+
+// 可唤醒判定的统一口径（issue #47），cli `party who` / `send --reach` 与 web mention 候选共用：
+// serve/watch 靠本地常驻 supervisor 持 WS，presence 不新鲜（supervisor 大概率已死）就叫不醒；
+// webhook 由服务端投递，agent 离线也真能被唤醒，不受新鲜度限制（幽灵清理由调用方另行处理）。
+export function wakeReachable(kind: WakeKind | undefined, ageMs: number, staleMs = PRESENCE_TIMEOUT_MS): boolean {
+  if (kind === "webhook") return true;
+  return (kind === "serve" || kind === "watch") && ageMs < staleMs;
+}
+
+export function autoWakeReachable(
+  entry: Pick<PresenceEntry, "wake" | "last_seen" | "ts" | "residency">,
+  now: number,
+  staleMs = PRESENCE_TIMEOUT_MS,
+): boolean {
+  if (entry.residency === "human_driven") return false;
+  const seen = presenceLastSeen(entry);
+  if (seen === null) return false;
+  return wakeReachable(entry.wake?.kind, now - seen, staleMs);
 }
 
 export function evaluateHostLease(
@@ -370,6 +456,7 @@ export interface CompletionArtifact {
   timeout: boolean;
   related_issues: number[];
   related_prs: number[];
+  task_id?: number;
 }
 
 export interface CompletionReview {
@@ -779,6 +866,11 @@ export interface PresenceFrame {
   wake?: WakeInfo;
   context?: AgentContext;
   lineage?: AgentLineage;
+  /** 人类全局唯一昵称（可@别名）。仅人类且已设置时下发；旧客户端忽略。 */
+  handle?: string;
+  display_name?: string;
+  avatar_url?: string;
+  avatar_thumb?: string;
 }
 
 export interface ErrorFrame {

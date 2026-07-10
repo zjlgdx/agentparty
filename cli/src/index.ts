@@ -14,8 +14,8 @@ commands:
   login     [--server URL]                          browser sign-in, store account session (human)
   logout                                             clear account session
   whoami    [--json] [--caps]                         print current identity + capabilities (hits /api/me)
-  agent     add <name> [--channel-scope slug]        mint an agent token as yourself (needs login)
-  spawn     <child> --channel-scope slug [--ttl 2h]  create a short-lived child agent from current agent
+  agent     add <name> [--channel-scope slug] | create <handle> --runner codex|claude|codex-sdk|shell [--invitable-by owner|org|anyone] | list
+  spawn     <worker> --channel-scope slug [--ttl 2h] create a short-lived worker from the front agent
   init      --server URL --token T [--channel C]   write config, bind channel (create if missing)
   send      <text|-> [--channel C] [--mention name]... [--reply-to seq]
   complete  <text|-> --kickoff-seq seq [--channel C] [--replies n] [--timeout] [--issue n]... [--pr n]...
@@ -24,9 +24,15 @@ commands:
   retract   <seq> [--channel C] [--json]
   supersede <seq> <text|-> [--channel C] [--json]
   watch     [channel|--channel C] [--timeout N] [--mentions-only] [--follow] [--json]
-  serve     [channel|--channel C] --on-mention "<cmd>" [--all]   常驻：每条 @你 的消息跑一次命令（唤醒睡着的 agent）
+  serve     [channel|--channel C] (--on-mention "<cmd>" | --runner codex|claude|codex-sdk) [--all] | --profile owner/handle
+  mcp                                                run stdio MCP server for structured agent tools
+  lark      notify on|off|status [--channel C]       send channel @mentions to your Lark/Feishu account
+  task      create|list|assign|claim|status|block|done [--channel C]  channel task ledger
+  board     [channel|--channel C] [--mine]            channel task board
+  squad     create|list|update|delete [--channel C]   channel @squad mention groups
   ask       <text|-> [--channel C] [--timeout 240] [--mention name]... [--reply-to seq] [--mentions-only]
   status    [channel|--channel C] working|waiting|blocked|done [-m note] [--mention name]...
+  statusline [--channel C] [--refresh] [--no-network]
   who       [channel|--channel C] [--json]                who is online/wakeable/recent — pick who to --mention
   charter   [slug] [--json] | set [slug] -f file.md|-m text|- | template
   history   [channel|--channel C] [--since seq] [--limit n] [--json] [--completion]
@@ -35,14 +41,14 @@ commands:
   host      board [channel|--channel C] [--since seq] [--limit n] [--json]
   capture   <seq>|list [channel|--channel C] --as decision|requirement|bug|action-item [-m note] [--json] [--issue-body]
   wake      test @agent [channel|--channel C] [--timeout N] [--json]
-  channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | reset-guard [slug] | kick <name> [slug] | role list|set|unset
+  channel   create <slug> [--title t] [--temp] [--party] [--public] | list | archive [slug] | guard unlimited|off|<limit> [slug] | workflow-guard off|<limit> [slug] | reset-guard [slug] | kick <name> [slug] | invite-agent <owner>/<handle> [slug] | remove-agent <owner>/<handle> [slug] | join-link <slug> | role list|set|unset
   invite    "<title>" [--slug s] [--temp] [--party] [--public] [--guest-name bob] [--owner label]   (ADMIN_SECRET env)
   webhook   add <channel> --name n --url URL --secret S [--filter mentions|status|needs-human|all] | remove <channel> --name n | list <channel>
   token     create --name n --role agent|human|readonly --owner label [--channel-scope slug] | revoke <name>   (ADMIN_SECRET env)
 
 watch defaults to a 240s timeout. With --follow, it stays attached unless --timeout N is explicit.
 
-exit codes: 0 ok/new message · 2 watch timeout (prints TIMEOUT) · 3 bad token · 4 loop guard · 5 archived`;
+exit codes: 0 ok/new message · 2 watch timeout (prints TIMEOUT) · 3 bad token · 4 loop guard · 5 archived · 6 stream ended (re-arm watch / restart serve) · 7 cli self-upgraded (restart serve)`;
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -81,10 +87,22 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./commands/watch")).run(rest);
     case "serve":
       return (await import("./commands/serve")).run(rest);
+    case "mcp":
+      return (await import("./commands/mcp")).run(rest);
+    case "lark":
+      return (await import("./commands/lark")).run(rest);
+    case "task":
+      return (await import("./commands/task")).run(rest);
+    case "board":
+      return (await import("./commands/board")).run(rest);
+    case "squad":
+      return (await import("./commands/squad")).run(rest);
     case "ask":
       return (await import("./commands/ask")).run(rest);
     case "status":
       return (await import("./commands/status")).run(rest);
+    case "statusline":
+      return (await import("./commands/statusline")).run(rest);
     case "who":
       return (await import("./commands/who")).run(rest);
     case "charter":

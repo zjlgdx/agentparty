@@ -19,6 +19,10 @@ import {
   type SearchHit,
   type SendMessageFrame,
   type SendStatusFrame,
+  type TaskAssigneeKind,
+  type TaskRecord,
+  type TaskState,
+  type ChannelSquad,
   type TokenRole,
   type WakeDelivery,
   type WebhookFilter,
@@ -28,6 +32,8 @@ import pkg from "../package.json" with { type: "json" };
 export type { ChannelMode, WebhookFilter };
 export type { CompletionGate, CompletionReview, CompletionReviewPolicy };
 export type { CaptureKind, CaptureRecord };
+export type { TaskAssigneeKind, TaskRecord, TaskState };
+export type { ChannelSquad };
 
 // 频道可见性：public = 任何鉴权身份可进；private（默认）= 仅 leo 的 ap_ token + 房主（spec §3.2）
 export type ChannelVisibility = "public" | "private";
@@ -58,12 +64,45 @@ export interface ChannelCharter {
   charter_rev: number;
   updated_at: number | null;
   updated_by: string | null;
+  permissions?: ChannelPerms;
 }
+
+export type HumanChannelPermPolicy = "owner" | "moderators" | "members";
+export type HumanChannelListPolicy = HumanChannelPermPolicy | "off";
+export type AgentChannelPermPolicy = "off" | "moderators" | "members" | "allowlist";
+
+export interface ChannelPerms {
+  charter_write: HumanChannelPermPolicy;
+  charter_write_agents: AgentChannelPermPolicy;
+  charter_write_agent_allowlist: string[];
+  members_list: HumanChannelListPolicy;
+  members_list_agents: AgentChannelPermPolicy;
+  members_list_agent_allowlist: string[];
+}
+
+export type ChannelPermsUpdate = Partial<{
+  charter_write: HumanChannelPermPolicy;
+  charter_write_agents: AgentChannelPermPolicy;
+  charter_write_agent_allowlist: string[];
+  members_list: HumanChannelListPolicy;
+  members_list_agents: AgentChannelPermPolicy;
+  members_list_agent_allowlist: string[];
+}>;
 
 export interface WebhookInfo {
   name: string;
   url: string;
   filter: WebhookFilter;
+}
+
+export interface LarkNotifyStatus {
+  enabled: boolean;
+  channel_slug: string;
+  target_name?: string;
+  provider_id?: string;
+  provider_kind?: string;
+  created_at?: number;
+  updated_at?: number;
 }
 
 export type ChannelRoleInfo = ChannelRoleAssignment;
@@ -84,6 +123,51 @@ export interface JoinLinkInfo {
   max_uses: number | null;
   uses: number;
   revoked_at: number | null;
+}
+
+export type ProjectAgentRunner = "codex" | "claude" | "codex-sdk" | "shell";
+export type ProjectAgentWorktreeStrategy = "branch" | "shared" | "none";
+export type ProjectAgentInvitableBy = "owner" | "org" | "anyone";
+
+export interface ProjectAgentProfile {
+  owner_account: string;
+  handle: string;
+  name: string;
+  runner: ProjectAgentRunner;
+  repo_url: string | null;
+  workdir: string | null;
+  base_branch: string;
+  worktree_strategy: ProjectAgentWorktreeStrategy;
+  rules: string | null;
+  invitable_by: ProjectAgentInvitableBy;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ChannelProjectAgentInvite {
+  id: number;
+  channel_slug: string;
+  owner_account: string;
+  profile_handle: string;
+  invited_by: string;
+  invited_at: number;
+  already_invited?: boolean;
+  profile: ProjectAgentProfile;
+}
+
+export interface ProjectAgentRuntime {
+  token: string;
+  profile: ProjectAgentProfile;
+}
+
+export interface ProjectAgentChannelRuntime {
+  token: string;
+  name: string;
+  role: "agent";
+  owner: string;
+  channel_scope: string;
+  lineage: AgentLineage;
+  profile: ProjectAgentProfile;
 }
 
 function extractError(status: number, body: unknown, raw: string): RestError {
@@ -172,6 +256,99 @@ export async function createAgent(
     headers: bearerJson(token),
     body: JSON.stringify(body),
   })) as { token: string; name: string; owner?: string; channel_scope?: string };
+}
+
+export async function listProjectAgentProfiles(server: string, token: string): Promise<ProjectAgentProfile[]> {
+  const body = await req(server, "/api/agent-profiles", { headers: bearerJson(token) });
+  const profiles = (body as Record<string, unknown> | null)?.profiles;
+  return Array.isArray(profiles) ? (profiles as ProjectAgentProfile[]) : [];
+}
+
+export async function createProjectAgentProfile(
+  server: string,
+  token: string,
+  body: {
+    handle: string;
+    name?: string;
+    runner: ProjectAgentRunner;
+    repo_url?: string;
+    workdir?: string;
+    base_branch?: string;
+    worktree_strategy?: ProjectAgentWorktreeStrategy;
+    rules?: string;
+    invitable_by?: ProjectAgentInvitableBy;
+  },
+): Promise<ProjectAgentProfile> {
+  return (await req(server, "/api/agent-profiles", {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as ProjectAgentProfile;
+}
+
+export async function inviteProjectAgent(
+  server: string,
+  token: string,
+  slug: string,
+  ownerAccount: string,
+  handle: string,
+): Promise<ChannelProjectAgentInvite> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/project-agents`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify({ owner_account: ownerAccount, handle }),
+  })) as ChannelProjectAgentInvite;
+}
+
+export async function removeProjectAgentInvite(
+  server: string,
+  token: string,
+  slug: string,
+  ownerAccount: string,
+  handle: string,
+): Promise<{ ok: true; channel_slug: string; owner_account: string; profile_handle: string; revoked_at: number }> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/project-agents`, {
+    method: "DELETE",
+    headers: bearerJson(token),
+    body: JSON.stringify({ owner_account: ownerAccount, handle }),
+  })) as { ok: true; channel_slug: string; owner_account: string; profile_handle: string; revoked_at: number };
+}
+
+export async function mintProjectAgentRuntimeToken(
+  server: string,
+  token: string,
+  handle: string,
+): Promise<ProjectAgentRuntime> {
+  return (await req(server, `/api/agent-profiles/${encodeURIComponent(handle)}/runtime-token`, {
+    method: "POST",
+    headers: bearerJson(token),
+  })) as ProjectAgentRuntime;
+}
+
+export async function listProjectAgentInvites(
+  server: string,
+  token: string,
+  handle?: string,
+): Promise<ChannelProjectAgentInvite[]> {
+  const suffix = handle === undefined ? "" : `?handle=${encodeURIComponent(handle)}`;
+  const body = await req(server, `/api/agent-profiles/invites${suffix}`, { headers: bearerJson(token) });
+  const invites = (body as Record<string, unknown> | null)?.invites;
+  return Array.isArray(invites) ? (invites as ChannelProjectAgentInvite[]) : [];
+}
+
+export async function ensureProjectAgentChannelRuntime(
+  server: string,
+  token: string,
+  slug: string,
+  ownerAccount: string,
+  handle: string,
+  childName: string,
+): Promise<ProjectAgentChannelRuntime> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/project-agents/runtime-token`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify({ owner_account: ownerAccount, handle, name: childName }),
+  })) as ProjectAgentChannelRuntime;
 }
 
 export async function spawnAgent(
@@ -274,6 +451,29 @@ export async function setChannelCharter(
   })) as ChannelCharter;
 }
 
+export async function fetchChannelPerms(server: string, token: string, slug: string): Promise<ChannelPerms> {
+  const body = (await req(server, `/api/channels/${encodeURIComponent(slug)}/perms`, {
+    headers: bearerJson(token),
+  })) as { permissions?: ChannelPerms };
+  if (!body.permissions) throw new Error("server did not return channel permissions");
+  return body.permissions;
+}
+
+export async function setChannelPerms(
+  server: string,
+  token: string,
+  slug: string,
+  update: ChannelPermsUpdate,
+): Promise<ChannelPerms> {
+  const body = (await req(server, `/api/channels/${encodeURIComponent(slug)}/perms`, {
+    method: "PUT",
+    headers: bearerJson(token),
+    body: JSON.stringify(update),
+  })) as { permissions?: ChannelPerms };
+  if (!body.permissions) throw new Error("server did not return channel permissions");
+  return body.permissions;
+}
+
 export async function createChannel(
   server: string,
   token: string,
@@ -329,6 +529,158 @@ export async function listWebhooks(
   if (Array.isArray(body)) return body as WebhookInfo[];
   const webhooks = (body as Record<string, unknown> | null)?.webhooks;
   return Array.isArray(webhooks) ? (webhooks as WebhookInfo[]) : [];
+}
+
+export async function getLarkNotifyStatus(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
+}
+
+export async function enableLarkNotify(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    method: "POST",
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
+}
+
+export async function disableLarkNotify(
+  server: string,
+  token: string,
+  slug: string,
+): Promise<LarkNotifyStatus> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/lark-notify`, {
+    method: "DELETE",
+    headers: bearerJson(token),
+  })) as LarkNotifyStatus;
+}
+
+export async function listTasks(
+  server: string,
+  token: string,
+  slug: string,
+  opts: { state?: TaskState; assignee?: string; limit?: number } = {},
+): Promise<TaskRecord[]> {
+  const params = new URLSearchParams();
+  if (opts.state !== undefined) params.set("state", opts.state);
+  if (opts.assignee !== undefined) params.set("assignee", opts.assignee);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const body = await req(server, `/api/channels/${encodeURIComponent(slug)}/tasks${suffix}`, {
+    headers: bearerJson(token),
+  });
+  const tasks = (body as Record<string, unknown> | null)?.tasks;
+  return Array.isArray(tasks) ? (tasks as TaskRecord[]) : [];
+}
+
+export async function createTask(
+  server: string,
+  token: string,
+  slug: string,
+  body: {
+    title: string;
+    desc?: string;
+    state?: TaskState;
+    assignee?: { name: string; kind: TaskAssigneeKind } | null;
+    priority?: number;
+    labels?: string[];
+    parent_id?: number;
+    anchor_seqs?: number[];
+    workflow_id?: string;
+  },
+): Promise<TaskRecord> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/tasks`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as TaskRecord;
+}
+
+export async function updateTask(
+  server: string,
+  token: string,
+  slug: string,
+  id: number,
+  body: {
+    title?: string;
+    desc?: string | null;
+    state?: TaskState;
+    assignee?: { name: string; kind: TaskAssigneeKind } | null;
+    priority?: number;
+    labels?: string[];
+  },
+): Promise<TaskRecord> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/tasks/${id}`, {
+    method: "PATCH",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as TaskRecord;
+}
+
+export async function listSquads(server: string, token: string, slug: string): Promise<ChannelSquad[]> {
+  const body = await req(server, `/api/channels/${encodeURIComponent(slug)}/squads`, {
+    headers: bearerJson(token),
+  });
+  const squads = (body as Record<string, unknown> | null)?.squads;
+  return Array.isArray(squads) ? (squads as ChannelSquad[]) : [];
+}
+
+export async function createSquad(
+  server: string,
+  token: string,
+  slug: string,
+  body: {
+    name: string;
+    title?: string;
+    description?: string;
+    leader?: string | null;
+    members: string[];
+  },
+): Promise<ChannelSquad> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/squads`, {
+    method: "POST",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as ChannelSquad;
+}
+
+export async function updateSquad(
+  server: string,
+  token: string,
+  slug: string,
+  name: string,
+  body: {
+    title?: string | null;
+    description?: string | null;
+    leader?: string | null;
+    members?: string[];
+  },
+): Promise<ChannelSquad> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/squads/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as ChannelSquad;
+}
+
+export async function deleteSquad(
+  server: string,
+  token: string,
+  slug: string,
+  name: string,
+): Promise<{ ok: true; squad: ChannelSquad }> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/squads/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    headers: bearerJson(token),
+  })) as { ok: true; squad: ChannelSquad };
 }
 
 export async function fetchMessages(
@@ -500,6 +852,32 @@ export async function setCompletionGate(
     headers: bearerJson(token),
     body: JSON.stringify(body),
   })) as { gate: CompletionGate; policy: CompletionReviewPolicy };
+}
+
+export async function setLoopGuard(
+  server: string,
+  token: string,
+  slug: string,
+  body: { enabled: boolean; limit?: number },
+): Promise<{ enabled: boolean; limit: number | null }> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/loop-guard`, {
+    method: "PUT",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as { enabled: boolean; limit: number | null };
+}
+
+export async function setWorkflowGuard(
+  server: string,
+  token: string,
+  slug: string,
+  body: { enabled: boolean; limit?: number },
+): Promise<{ enabled: boolean; limit: number | null }> {
+  return (await req(server, `/api/channels/${encodeURIComponent(slug)}/workflow-guard`, {
+    method: "PUT",
+    headers: bearerJson(token),
+    body: JSON.stringify(body),
+  })) as { enabled: boolean; limit: number | null };
 }
 
 export async function setChannelVisibility(
